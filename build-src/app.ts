@@ -2,6 +2,7 @@ import { families, defaults, resolveSelection } from './catalog.ts';
 import type { ModelId, Selection, ResolvedSelection } from './catalog.ts';
 import { createAwningViewer } from './viewer.ts';
 import { createCommerceController } from './commerce.ts';
+import { resolveResourceBase, readPageSelection } from './context.ts';
 
 let nextInstance = 0;
 
@@ -38,10 +39,10 @@ export function renderShopHtml(target: HTMLElement, html: string) {
   target.replaceChildren(template.content);
 }
 
-function createConfigurator(root: HTMLElement) {
+function createConfigurator(root: HTMLElement, currentScriptSrc: string | null, currentScriptBase: string | null) {
   const instanceId = 'eam-' + (++nextInstance);
-  const assetBase = (root.dataset.assetBase || '').replace(/\/+$/, '');
-  if (!assetBase) throw new Error('Die Konfigurator-Dateien sind nicht verfügbar.');
+  const resourceBase = resolveResourceBase(currentScriptSrc, currentScriptBase, root.dataset.assetBase || null, window.location.href);
+  const textureBase = resourceBase + '/images/awning-configurator/textures';
   const defaultModel = families.find((family) => family.id === root.dataset.defaultModel)?.id || 'vollkassette';
   const allowModelSwitch = root.dataset.allowModelSwitch !== 'false';
   const showDescription = root.dataset.showDescription !== 'false';
@@ -51,7 +52,9 @@ function createConfigurator(root: HTMLElement) {
     halbkassette: { ...defaults.halbkassette },
     gelenkarm: { ...defaults.gelenkarm },
   };
-  let resolved = resolveSelection(remembered[defaultModel]);
+  const pageSelection = root.dataset.useCurrentVariation !== 'false' ? readPageSelection(window).selection : null;
+  let resolved = resolveSelection(pageSelection || remembered[defaultModel]);
+  remembered[resolved.selection.model] = { ...resolved.selection };
   let openPanel: string | null = null;
   let lastVariationId = 0;
   let disposed = false;
@@ -96,13 +99,13 @@ function createConfigurator(root: HTMLElement) {
   root.replaceChildren(scene, commerceRow, details);
 
   function textureUrl(state: ResolvedSelection) {
-    return assetBase + '/textures/' + state.selection.model + '/' + state.fabric.file;
+    return textureBase + '/' + state.selection.model + '/' + state.fabric.file;
   }
   const viewer = createAwningViewer(viewerHost, {
     model: resolved.selection.model, housingColor: resolved.housing.hex,
     fabricTexture: textureUrl(resolved), widthMm: resolved.size.widthMm,
     projectionMm: resolved.size.projectionMm,
-  }, assetBase);
+  }, resourceBase);
   const commerce = createCommerceController(commerceHost, {
     onStatus(message, salable) {
       if (disposed) return;
@@ -186,7 +189,7 @@ function createConfigurator(root: HTMLElement) {
       button.setAttribute('aria-label', fabric.name);
       const swatch = node('span', 'eam-swatch-circle');
       const img = node('img');
-      img.src = assetBase + '/textures/' + resolved.selection.model + '/' + fabric.file;
+      img.src = textureBase + '/' + resolved.selection.model + '/' + fabric.file;
       img.alt = '';
       img.loading = 'lazy';
       img.width = 40;
@@ -280,8 +283,19 @@ function createConfigurator(root: HTMLElement) {
 export function start() {
   const win = window as any;
   if (win.EclipseAwningConfigurator?.started) return;
+  // Capture while this deferred script is executing, before DOMContentLoaded.
+  const script = (document.currentScript || document.getElementById('eclipse-awning-configurator-script')) as HTMLScriptElement | null;
+  const currentScriptSrc = script?.src || null;
+  const currentScriptBase = script?.dataset.eamResourceBase || null;
   const instances = new Map<HTMLElement, ReturnType<typeof createConfigurator>>();
+  const waitingSince = new Map<HTMLElement, number>();
+  let retryTimer = 0;
+  function scheduleContextRetry() {
+    if (retryTimer) return;
+    retryTimer = window.setTimeout(() => { retryTimer = 0; mountAll(); }, 100);
+  }
   function mountAll() {
+    for (const root of waitingSince.keys()) if (!root.isConnected) waitingSince.delete(root);
     for (const [root, handle] of instances) {
       if (!root.isConnected) { handle.destroy(); instances.delete(root); }
     }
@@ -291,14 +305,20 @@ export function start() {
         root.textContent = 'Der Markisen-Konfigurator ist bereits weiter oben auf dieser Seite verfügbar.';
         return;
       }
-      try { instances.set(root, createConfigurator(root)); }
+      if (win.App?.isItemView && root.dataset.useCurrentVariation !== 'false' && !readPageSelection(win).ready) {
+        const since = waitingSince.get(root) ?? Date.now();
+        waitingSince.set(root, since);
+        if (Date.now() - since < 8000) { scheduleContextRetry(); return; }
+      }
+      waitingSince.delete(root);
+      try { instances.set(root, createConfigurator(root, currentScriptSrc, currentScriptBase)); }
       catch (error) {
         root.textContent = 'Der Markisen-Konfigurator konnte nicht geladen werden. Bitte laden Sie die Seite neu.';
         console.error('[EclipseAwningConfigurator]', error);
       }
     });
   }
-  win.EclipseAwningConfigurator = { version: '1.0.1', started: true, mountAll };
+  win.EclipseAwningConfigurator = { version: '1.1.0', started: true, mountAll };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountAll, { once: true });
   else mountAll();
   const observer = new MutationObserver((records) => {

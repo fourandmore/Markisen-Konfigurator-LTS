@@ -1,6 +1,6 @@
 {
   "name": "eclipse-awning-configurator-lts",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Local source build and validation for the supplied plentyShop LTS widget.",

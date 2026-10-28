@@ -56,6 +56,15 @@ export function hasUsablePrice(product: any): boolean {
   return true;
 }
 
+/** IO bundleSetting=0 replaces a bundle with its components in the real basket. */
+export function bundlePurchaseIssue(product: any, App: any): string | null {
+  if (product?.variation?.bundleType === 'bundle_item') return 'catalog-points-to-bundle-component';
+  if (product?.variation?.bundleType !== 'bundle') return null;
+  const setting = App?.bundleSetting;
+  if (setting === 1 || setting === 2 || setting === '1' || setting === '2') return null;
+  return setting === 0 || setting === '0' ? 'native-basket-would-split-bundle' : 'unverified-native-bundle-setting';
+}
+
 export async function installNativeVariation(store: any, document: any): Promise<void> {
   const itemId = Number(document.data.item.id);
   if (!store.state.items[itemId]) {
@@ -67,17 +76,79 @@ export async function installNativeVariation(store: any, document: any): Promise
   store.commit(`${itemId}/setVariationMarkInvalidProps`, false);
 }
 
+let purchaseScope = 0;
+const isolatedRuntimeMessage = 'Der Kaufbereich für diese Artikelseite ist noch nicht verfügbar. Bitte laden Sie ihn erneut oder öffnen Sie die Produktseite der Auswahl.';
+
+/**
+ * Reuse the installed Ceres calculations and property validation, with fresh state.
+ * BaseItemModule.registerItem closes over Ceres' GLOBAL store; copying its actions
+ * would therefore overwrite the PDP. loadVariation also changes the page URL.
+ * Only the two native basket/component actions cross this private store boundary.
+ */
+export function createIsolatedPurchaseStore(rootStore: any, Vuex: any, itemId: string): any {
+  const base = rootStore?._modules?.root?._children?.items;
+  const nativeItem = base?._children?.[rootStore?.state?.items?.mainItemId];
+  const nativeSelect = nativeItem?._children?.variationSelect;
+  const rawBase = base?._rawModule;
+  const rawItem = nativeItem?._rawModule;
+  const rawSelect = nativeSelect?._rawModule;
+  const hasFunctions = (object: any, names: string[]) => names.every(name => typeof object?.[name] === 'function');
+  if (typeof Vuex?.Store !== 'function' || rootStore?.constructor !== Vuex.Store ||
+    !rootStore.state.basket || !/^eam_\d+$/.test(itemId) ||
+    ![rawBase, rawItem, rawSelect].every(raw => typeof raw?.state === 'function') ||
+    rawBase.namespaced || !rawItem.namespaced || !rawSelect.namespaced ||
+    !hasFunctions(rawBase.mutations, ['setMainItemId', 'setIsAddToBasketLoading']) ||
+    !hasFunctions(rawBase.getters, ['currentItemVariation', 'itemSetTotalPrice', 'itemSetAllVariationSelected']) ||
+    !hasFunctions(rawItem.mutations, ['setVariation', 'setVariationOrderQuantity', 'setVariationOrderProperty', 'setVariationPropertySurcharges', 'setVariationMarkInvalidProps']) ||
+    !hasFunctions(rawItem.getters, ['currentItemVariation', 'variationTotalPrice', 'variationBasePrice', 'variationGraduatedPrice', 'variationGroupedProperties', 'variationMissingProperties']) ||
+    !hasFunctions(rawSelect.mutations, ['setIsVariationSelected']) ||
+    !rootStore._actions?.addBasketItem || !rootStore._actions?.loadComponent || !rootStore._mutations?.setIsBasketLoading) {
+    throw new Error(isolatedRuntimeMessage);
+  }
+  const freshModule = (raw: any) => ({
+    namespaced: !!raw.namespaced,
+    state: JSON.parse(JSON.stringify(raw.state())),
+    getters: { ...raw.getters },
+    mutations: { ...raw.mutations },
+    // Deliberately do not copy actions or registered children from the page.
+  });
+  const localStore = new Vuex.Store({
+    devtools: false,
+    state: { basket: rootStore.state.basket },
+    actions: {
+      addBasketItem(_context: any, payload: any) { return rootStore.dispatch('addBasketItem', payload); },
+      loadComponent(_context: any, payload: any) { return rootStore.dispatch('loadComponent', payload); },
+    },
+    mutations: {
+      setIsBasketLoading(_state: any, value: boolean) { rootStore.commit('setIsBasketLoading', value); },
+    },
+    modules: {
+      items: {
+        ...freshModule(rawBase),
+        modules: {
+          [itemId]: { ...freshModule(rawItem), modules: { variationSelect: freshModule(rawSelect) } },
+        },
+      },
+    },
+  });
+  localStore.commit('setMainItemId', itemId);
+  return localStore;
+}
+
 export function createCommerceController(host: HTMLElement, options: CommerceOptions): CommerceHandle {
   let sequence = 0;
   let disposed = false;
   let controller: AbortController | null = null;
   let purchaseVm: any = null;
-  let mountedItemId = 0;
+  let purchaseRenderError = false;
+  let mountedItemId: number | string = 0;
+  let isolatedStore: any = null;
   let selection: Variant | null = null;
   let debounceTimer = 0;
   let unsubscribeStore: (() => void) | null = null;
   let currentDocument: any = null;
   let contextKey = '';
+  const initializedProperties = new WeakMap<object, any>();
 
   const message = document.createElement('div');
   message.className = 'eam-commerce-message';
@@ -104,7 +175,7 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
     if (!win.Vue || !win.ceresStore || !win.App || !win.Vue.options?.components?.['single-add-to-basket']) {
       throw new Error('Der Kaufbereich ist momentan nicht verfügbar. Bitte laden Sie die Seite neu.');
     }
-    return { Vue: win.Vue, store: win.ceresStore, App: win.App };
+    return { Vue: win.Vue, Vuex: win.Vuex, store: win.ceresStore, App: win.App };
   }
   function productUrl(product: any): string | null {
     try {
@@ -134,9 +205,64 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
       purchaseVm = null;
     }
     mountedItemId = 0;
+    purchaseRenderError = false;
     mount.replaceChildren();
   }
+  function disposeIsolatedStore() {
+    // Vuex 3 has two private Vue instances; neither belongs to the page store.
+    isolatedStore?._vm?.$destroy();
+    isolatedStore?._watcherVM?.$destroy();
+    isolatedStore = null;
+  }
+  function scopePropertyInputs(component: any) {
+    if (!isolatedStore || !component.$el?.querySelectorAll) return;
+    const prefix = String(mountedItemId) + '_';
+    for (const field of component.$el.querySelectorAll('input, select, textarea')) {
+      const oldId = field.getAttribute('id');
+      if (oldId && !oldId.startsWith(prefix)) {
+        // The native text/select IDs are not unique when the PDP also has them.
+        const scopedId = prefix + component._uid + '_' + oldId;
+        field.setAttribute('id', scopedId);
+        for (const label of component.$el.querySelectorAll('label[for]')) {
+          if (label.getAttribute('for') === oldId) label.setAttribute('for', scopedId);
+        }
+      }
+      const name = field.getAttribute('name');
+      if (name && !name.startsWith(prefix)) field.setAttribute('name', prefix + name);
+    }
+  }
+  function resetLocalPropertyInputs() {
+    if (!isolatedStore || disposed || !purchaseVm || !currentDocument ||
+      Number(currentDocument.data.variation.id) !== selection?.variationId) return;
+    const visit = (component: any) => {
+      if (component.$options?.name === 'order-property-list-item') {
+        scopePropertyInputs(component);
+        // Run once per document/child, including a late native component mount.
+        if (initializedProperties.get(component) !== currentDocument) {
+          initializedProperties.set(component, currentDocument);
+          if (component.property?.valueType === 'selection') {
+            component.selectionValue = component.property.value || null;
+          } else if (component.property?.valueType === 'file') {
+            if (component.$refs?.fileInput) component.clearSelectedFile();
+          } else {
+            component.inputValue = component.property?.value || '';
+          }
+        }
+      }
+      for (const child of component.$children || []) visit(child);
+    };
+    visit(purchaseVm);
+  }
+  function afterPropertiesMounted() {
+    // The wrapper is assigned only after synchronous child mounts have finished.
+    const Vue = (window as any).Vue;
+    if (Vue) void Vue.nextTick(() => {
+      if (isolatedStore) resetLocalPropertyInputs();
+      else emitVariationChanged();
+    });
+  }
   function emitVariationChanged() {
+    if (isolatedStore) { resetLocalPropertyInputs(); return; }
     if (disposed || !currentDocument || Number(currentDocument.data.variation.id) !== selection?.variationId) return;
     document.dispatchEvent(new CustomEvent('onVariationChanged', {
       detail: { itemId: Number(currentDocument.data.item.id), documents: [currentDocument], attributes: currentDocument.data.attributes || [] },
@@ -160,8 +286,8 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
       retrySelection();
     });
   }
-  function mountPurchase(itemId: number, Vue: any, store: any, App: any) {
-    if (purchaseVm && mountedItemId === itemId) return;
+  function mountPurchase(itemId: number | string, Vue: any, store: any, App: any) {
+    if (purchaseVm && mountedItemId === itemId && !purchaseRenderError) return;
     disposePurchase();
     const point = document.createElement('div');
     mount.appendChild(point);
@@ -182,8 +308,12 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
           } catch { return fallbackText; }
         },
       },
+      updated() { resetLocalPropertyInputs(); },
       errorCaptured(error: any) {
-        showMessage('Der Kaufbereich konnte nicht vollständig geladen werden. Bitte versuchen Sie es erneut.', true);
+        if (disposed || this._isDestroyed) return false;
+        purchaseRenderError = true;
+        showMessage('Der Kaufbereich konnte nicht vollständig geladen werden. Bitte versuchen Sie es erneut.', true,
+          productUrl(currentDocument?.data));
         options.onStatus('Kaufbereich momentan nicht verfügbar', false);
         console.warn('[EclipseAwningConfigurator] Native Kaufkomponente:', error?.message || String(error));
         return false;
@@ -205,7 +335,7 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
         ]));
         if (item.variation.bundleType === 'bundle') blocks.push(h('single-item-bundle'));
         if (item.filter.isSalable && this.groupedProperties.length) blocks.push(h('order-property-list', {
-          on: { 'hook:mounted': emitVariationChanged },
+          on: { 'hook:mounted': afterPropertiesMounted, 'hook:updated': resetLocalPropertyInputs },
         }));
         if (Array.isArray(item.prices.graduatedPrices)) blocks.push(h('graduated-prices'));
         blocks.push(h('div', { class: 'eam-native-availability' }, [h('item-availability')]));
@@ -220,7 +350,7 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
   async function load(current: Variant, requestId: number) {
     let responseUrl: string | null = null;
     try {
-      const { Vue, store, App } = runtime();
+      const { Vue, Vuex, store, App } = runtime();
       ensureSubscription(store);
       if (disposed || requestId !== sequence) return;
       controller = new AbortController();
@@ -249,10 +379,21 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
       const product = itemDocument.data;
       responseUrl = productUrl(product);
       options.onProduct(product, responseUrl);
-      // Item sets have a global LTS context. Never change another item's context.
-      if (product.item.itemType === 'set' || store.state.items?.isItemSet || App.isItemView) {
+      // A selected item set still needs Ceres' full native set-component UI.
+      // Standard products on a set PDP are safe in their independent context.
+      if (product.item.itemType === 'set' || (!App.isItemView && store.state.items?.isItemSet)) {
         showMessage('Für diese Auswahl können Sie die Bestellung auf der Produktseite abschließen.', false, responseUrl);
         options.onStatus('Bitte auf der Produktseite fortfahren', false);
+        return;
+      }
+      const bundleIssue = bundlePurchaseIssue(product, App);
+      if (bundleIssue) {
+        showMessage('Diese Markise kann derzeit nicht als vollständiges Paket bestellt werden.', false, responseUrl);
+        options.onStatus('Paketbestellung derzeit nicht verfügbar', false);
+        console.warn('[EclipseAwningConfigurator] Paketbestellung nicht freigegeben.', {
+          reason: bundleIssue, itemId: current.itemId, variationId: current.variationId,
+          bundleType: product.variation.bundleType, bundleSetting: App.bundleSetting,
+        });
         return;
       }
       if (!hasUsablePrice(product)) {
@@ -262,13 +403,37 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
       }
       // Display-only optional metadata expected by the installed native component.
       if (!product.prices.default.lowestPrice) product.prices.default.lowestPrice = { value: null, formatted: '' };
-      currentDocument = itemDocument;
-      await installNativeVariation(store, itemDocument);
+      let purchaseStore = store;
+      let purchaseItemId: number | string = current.itemId;
+      if (App.isItemView) {
+        purchaseItemId = 'eam_' + (++purchaseScope);
+        // Prepare completely before replacing a previous working scope. A fresh
+        // store also keeps late native file-upload callbacks on their old item.
+        const nextStore = createIsolatedPurchaseStore(store, Vuex, purchaseItemId);
+        const localDocument = JSON.parse(JSON.stringify(itemDocument));
+        try {
+          nextStore.commit(`${purchaseItemId}/setVariation`, { documents: [localDocument] });
+          nextStore.commit(`${purchaseItemId}/variationSelect/setIsVariationSelected`, true);
+          nextStore.commit(`${purchaseItemId}/setVariationMarkInvalidProps`, false);
+        } catch (error) {
+          nextStore._vm?.$destroy();
+          nextStore._watcherVM?.$destroy();
+          throw error;
+        }
+        disposePurchase();
+        disposeIsolatedStore();
+        isolatedStore = nextStore;
+        purchaseStore = nextStore;
+        currentDocument = localDocument;
+      } else {
+        currentDocument = itemDocument;
+        await installNativeVariation(store, itemDocument);
+      }
       if (disposed || requestId !== sequence) return;
-      mountPurchase(current.itemId, Vue, store, App);
+      mountPurchase(purchaseItemId, Vue, purchaseStore, App);
       await Vue.nextTick();
-      if (disposed || requestId !== sequence) return;
-      // Existing native property inputs reset on this documented LTS event.
+      if (disposed || requestId !== sequence || purchaseRenderError) return;
+      // PDP inputs reset locally, never by an event targeting the page's item.
       emitVariationChanged();
       message.hidden = true;
       mount.hidden = false;
@@ -279,10 +444,11 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
         : (availability ? availability + ' · Derzeit nicht bestellbar' : 'Derzeit nicht bestellbar'), product.filter.isSalable);
     } catch (error: any) {
       if (disposed || requestId !== sequence) return;
-      showMessage(error?.name === 'AbortError'
+      const unsupportedPdp = error?.message === isolatedRuntimeMessage;
+      showMessage(unsupportedPdp ? isolatedRuntimeMessage : error?.name === 'AbortError'
         ? 'Die Produktabfrage hat zu lange gedauert. Bitte versuchen Sie es erneut.'
         : 'Preis und Verfügbarkeit konnten momentan nicht geladen werden. Bitte versuchen Sie es erneut.', true, responseUrl);
-      options.onStatus('Verfügbarkeit konnte nicht geladen werden', false);
+      options.onStatus(unsupportedPdp ? 'Kaufbereich der Artikelseite noch nicht verfügbar' : 'Verfügbarkeit konnte nicht geladen werden', false);
       options.onProduct(null, null);
       console.warn('[EclipseAwningConfigurator] Produkt konnte nicht geladen werden.', {
         itemId: current.itemId, variationId: current.variationId, message: error?.message || String(error),
@@ -324,6 +490,7 @@ export function createCommerceController(host: HTMLElement, options: CommerceOpt
       unsubscribeStore?.();
       retry.removeEventListener('click', retrySelection);
       disposePurchase();
+      disposeIsolatedStore();
       host.replaceChildren();
     },
   };

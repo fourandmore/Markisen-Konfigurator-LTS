@@ -22,7 +22,7 @@ let nextViewerId = 0;
 export function createAwningViewer(
   host: HTMLElement,
   initial: AwningViewerProps,
-  assetBase: string,
+  pluginResourceBase: string,
 ): AwningViewerHandle {
   const props: AwningViewerProps = { ...initial };
   const stage = document.createElement('div');
@@ -37,7 +37,15 @@ export function createAwningViewer(
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   status.setAttribute('aria-atomic', 'true');
-  status.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(255,255,255,.88);color:#52676c;z-index:4;text-align:center;pointer-events:none;';
+  status.style.cssText = 'position:absolute;inset:0;display:none;flex-direction:column;gap:8px;align-items:center;justify-content:center;padding:24px;background:rgba(255,255,255,.88);color:#52676c;z-index:4;text-align:center;pointer-events:none;';
+  const statusText = document.createElement('span');
+  statusText.className = 'eam-viewer-message-text';
+  const statusLink = document.createElement('a');
+  statusLink.className = 'eam-viewer-error-link';
+  statusLink.target = '_blank';
+  statusLink.rel = 'noopener noreferrer';
+  statusLink.style.cssText = 'display:none;max-width:100%;overflow-wrap:anywhere;font-size:12px;line-height:1.4;color:inherit;text-decoration:underline;pointer-events:auto;';
+  status.append(statusText, statusLink);
   const controls = document.createElement('div');
   controls.className = 'eam-viewer-controls';
   controls.setAttribute('role', 'group');
@@ -55,6 +63,8 @@ export function createAwningViewer(
   let loading = false;
   let modelError = '';
   let textureError = '';
+  let modelFailure: { url: string; status: number | null } | null = null;
+  let textureFailure: { url: string; status: number | null } | null = null;
   let modelRequest = 0;
   let modelAbort: AbortController | null = null;
   let textureAbort: AbortController | null = null;
@@ -106,7 +116,22 @@ export function createAwningViewer(
   }
   function syncMessage() {
     const message = modelError || textureError || (loading ? '3D-Modell wird geladen …' : '');
-    status.textContent = message;
+    const failure = modelError ? modelFailure : textureError ? textureFailure : null;
+    statusText.textContent = message;
+    statusLink.style.display = 'none';
+    statusLink.textContent = '';
+    statusLink.removeAttribute('href');
+    if (failure) {
+      try {
+        const url = new URL(failure.url, document.baseURI);
+        if (url.protocol === 'https:' || url.protocol === 'http:') {
+          statusLink.href = url.href;
+          statusLink.textContent = url.href;
+          statusLink.title = modelError ? 'Modelldatei in neuem Tab öffnen' : 'Tuchtextur in neuem Tab öffnen';
+          statusLink.style.display = 'inline';
+        }
+      } catch { /* The error text remains visible if an asset URL is malformed. */ }
+    }
     status.style.display = message ? 'flex' : 'none';
     status.style.color = modelError || textureError ? '#9b2c2c' : '#52676c';
     status.classList.toggle('eam-viewer-message--error', !!(modelError || textureError));
@@ -432,7 +457,8 @@ function armTransform(mesh:MeshGpu,x:number,y:number,z:number,m:ArmMetrics):[num
   return[nx,ny,nz,0];
 }
 
-const modelUrl = () => assetBase.replace(/\/$/, '') + '/models/' + (props.model === 'vollkassette'
+// plugin_path() already points to the plugin resources directory.
+const modelUrl = () => pluginResourceBase.replace(/\/+$/, '') + '/documents/awning-configurator/models/' + (props.model === 'vollkassette'
   ? 'vollkassette-6100.glb' : props.model === 'halbkassette'
     ? 'halbkassette-2950.glb' : 'gelenkarm-1100.glb');
 
@@ -684,14 +710,20 @@ async function loadFabricTexture() {
   textureAbort?.abort();
   textureAbort = null;
   disposeTexture();
+  textureError = '';
+  textureFailure = null;
+  syncMessage();
   requestDraw();
   if (!gl || !props.fabricTexture || disposed) return;
   const controller = new AbortController();
   textureAbort = controller;
   let objectUrl: string | null = null;
+  const requestUrl = props.fabricTexture;
+  let responseStatus: number | null = null;
   try {
-    const response = await fetch(props.fabricTexture, { signal: controller.signal, credentials: 'same-origin' });
-    if (!response.ok) throw new Error(`Tuchtextur konnte nicht geladen werden (${response.status}).`);
+    const response = await fetch(requestUrl, { signal: controller.signal, credentials: 'same-origin' });
+    responseStatus = response.status;
+    if (!response.ok) throw new Error(`Die Tuchtextur konnte nicht geladen werden (HTTP ${response.status}).`);
     const blob = await response.blob();
     if (disposed || requestId !== textureRequest || controller.signal.aborted) return;
     objectUrl = URL.createObjectURL(blob);
@@ -725,7 +757,16 @@ async function loadFabricTexture() {
   } catch (cause) {
     if (disposed || requestId !== textureRequest || controller.signal.aborted) return;
     disposeTexture();
-    textureError = 'Die gewählte Tuchtextur konnte nicht geladen werden. Bitte „Neu laden“ wählen.';
+    textureError = responseStatus === 404
+      ? 'Die gewählte Tuchtextur wurde nicht gefunden (HTTP 404).'
+      : responseStatus !== null && responseStatus >= 400
+        ? `Die gewählte Tuchtextur konnte nicht geladen werden (HTTP ${responseStatus}).`
+        : 'Die gewählte Tuchtextur konnte nicht geladen werden. Bitte „Neu laden“ wählen.';
+    textureFailure = { url: requestUrl, status: responseStatus };
+    console.warn('[EclipseAwningConfigurator] Tuchtextur konnte nicht geladen werden.', {
+      asset: 'texture', url: requestUrl, status: responseStatus,
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
     syncMessage();
     requestDraw();
   } finally {
@@ -814,12 +855,20 @@ async function loadModel() {
   modelAbort = controller;
   modelError = '';
   textureError = '';
+  modelFailure = null;
+  textureFailure = null;
   loading = true;
   setCanvasLabel();
   syncMessage();
+  const requestUrl = modelUrl();
+  const requestedModel = props.model;
+  let responseStatus: number | null = null;
   try {
-    const response = await fetch(modelUrl(), { signal: controller.signal, credentials: 'same-origin' });
-    if (!response.ok) throw new Error(`3D-Modell konnte nicht geladen werden (${response.status}).`);
+    const response = await fetch(requestUrl, { signal: controller.signal, credentials: 'same-origin' });
+    responseStatus = response.status;
+    if (!response.ok) throw new Error(response.status === 404
+      ? 'Das 3D-Modell wurde nicht gefunden (HTTP 404).'
+      : `Das 3D-Modell konnte nicht geladen werden (HTTP ${response.status}).`);
     const buffer = await response.arrayBuffer();
     if (disposed || requestId !== modelRequest || controller.signal.aborted || !gl) return;
     uploadGlb(buffer);
@@ -832,6 +881,10 @@ async function loadModel() {
     if (disposed || requestId !== modelRequest || controller.signal.aborted) return;
     disposeGpu();
     modelError = cause instanceof Error ? cause.message : 'Die 3D-Vorschau konnte nicht geladen werden.';
+    modelFailure = { url: requestUrl, status: responseStatus };
+    console.warn('[EclipseAwningConfigurator] 3D-Modell konnte nicht geladen werden.', {
+      asset: 'model', model: requestedModel, url: requestUrl, status: responseStatus, message: modelError,
+    });
   } finally {
     if (!disposed && requestId === modelRequest) {
       loading = false;
@@ -950,6 +1003,8 @@ listen(canvas, 'webglcontextlost', ((event: Event) => {
   vaos.length = 0;
   activeTexture = null;
   loading = false;
+  modelFailure = null;
+  textureFailure = null;
   modelError = 'Die 3D-Ansicht wurde vom Browser pausiert. Sie wird nach Wiederherstellung neu geladen.';
   syncMessage();
 }) as EventListener);

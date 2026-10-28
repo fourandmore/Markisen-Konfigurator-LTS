@@ -1,4 +1,4 @@
-/* EclipseAwningConfigurator 1.0.1 | Four & More GmbH | built from build-src */
+/* EclipseAwningConfigurator 1.1.0 | Four & More GmbH | built from build-src */
 (function () {
 "use strict";
 const Catalog = (() => {
@@ -481,7 +481,7 @@ let nextViewerId = 0;
 function createAwningViewer(
   host             ,
   initial                   ,
-  assetBase        ,
+  pluginResourceBase        ,
 )                     {
   const props                    = { ...initial };
   const stage = document.createElement('div');
@@ -496,7 +496,15 @@ function createAwningViewer(
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   status.setAttribute('aria-atomic', 'true');
-  status.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(255,255,255,.88);color:#52676c;z-index:4;text-align:center;pointer-events:none;';
+  status.style.cssText = 'position:absolute;inset:0;display:none;flex-direction:column;gap:8px;align-items:center;justify-content:center;padding:24px;background:rgba(255,255,255,.88);color:#52676c;z-index:4;text-align:center;pointer-events:none;';
+  const statusText = document.createElement('span');
+  statusText.className = 'eam-viewer-message-text';
+  const statusLink = document.createElement('a');
+  statusLink.className = 'eam-viewer-error-link';
+  statusLink.target = '_blank';
+  statusLink.rel = 'noopener noreferrer';
+  statusLink.style.cssText = 'display:none;max-width:100%;overflow-wrap:anywhere;font-size:12px;line-height:1.4;color:inherit;text-decoration:underline;pointer-events:auto;';
+  status.append(statusText, statusLink);
   const controls = document.createElement('div');
   controls.className = 'eam-viewer-controls';
   controls.setAttribute('role', 'group');
@@ -514,6 +522,8 @@ function createAwningViewer(
   let loading = false;
   let modelError = '';
   let textureError = '';
+  let modelFailure                                                = null;
+  let textureFailure                                                = null;
   let modelRequest = 0;
   let modelAbort                         = null;
   let textureAbort                         = null;
@@ -565,7 +575,22 @@ function createAwningViewer(
   }
   function syncMessage() {
     const message = modelError || textureError || (loading ? '3D-Modell wird geladen …' : '');
-    status.textContent = message;
+    const failure = modelError ? modelFailure : textureError ? textureFailure : null;
+    statusText.textContent = message;
+    statusLink.style.display = 'none';
+    statusLink.textContent = '';
+    statusLink.removeAttribute('href');
+    if (failure) {
+      try {
+        const url = new URL(failure.url, document.baseURI);
+        if (url.protocol === 'https:' || url.protocol === 'http:') {
+          statusLink.href = url.href;
+          statusLink.textContent = url.href;
+          statusLink.title = modelError ? 'Modelldatei in neuem Tab öffnen' : 'Tuchtextur in neuem Tab öffnen';
+          statusLink.style.display = 'inline';
+        }
+      } catch { /* The error text remains visible if an asset URL is malformed. */ }
+    }
     status.style.display = message ? 'flex' : 'none';
     status.style.color = modelError || textureError ? '#9b2c2c' : '#52676c';
     status.classList.toggle('eam-viewer-message--error', !!(modelError || textureError));
@@ -891,7 +916,8 @@ function armTransform(mesh        ,x       ,y       ,z       ,m           )     
   return[nx,ny,nz,0];
 }
 
-const modelUrl = () => assetBase.replace(/\/$/, '') + '/models/' + (props.model === 'vollkassette'
+// plugin_path() already points to the plugin resources directory.
+const modelUrl = () => pluginResourceBase.replace(/\/+$/, '') + '/documents/awning-configurator/models/' + (props.model === 'vollkassette'
   ? 'vollkassette-6100.glb' : props.model === 'halbkassette'
     ? 'halbkassette-2950.glb' : 'gelenkarm-1100.glb');
 
@@ -1143,14 +1169,20 @@ async function loadFabricTexture() {
   textureAbort?.abort();
   textureAbort = null;
   disposeTexture();
+  textureError = '';
+  textureFailure = null;
+  syncMessage();
   requestDraw();
   if (!gl || !props.fabricTexture || disposed) return;
   const controller = new AbortController();
   textureAbort = controller;
   let objectUrl                = null;
+  const requestUrl = props.fabricTexture;
+  let responseStatus                = null;
   try {
-    const response = await fetch(props.fabricTexture, { signal: controller.signal, credentials: 'same-origin' });
-    if (!response.ok) throw new Error(`Tuchtextur konnte nicht geladen werden (${response.status}).`);
+    const response = await fetch(requestUrl, { signal: controller.signal, credentials: 'same-origin' });
+    responseStatus = response.status;
+    if (!response.ok) throw new Error(`Die Tuchtextur konnte nicht geladen werden (HTTP ${response.status}).`);
     const blob = await response.blob();
     if (disposed || requestId !== textureRequest || controller.signal.aborted) return;
     objectUrl = URL.createObjectURL(blob);
@@ -1184,7 +1216,16 @@ async function loadFabricTexture() {
   } catch (cause) {
     if (disposed || requestId !== textureRequest || controller.signal.aborted) return;
     disposeTexture();
-    textureError = 'Die gewählte Tuchtextur konnte nicht geladen werden. Bitte „Neu laden“ wählen.';
+    textureError = responseStatus === 404
+      ? 'Die gewählte Tuchtextur wurde nicht gefunden (HTTP 404).'
+      : responseStatus !== null && responseStatus >= 400
+        ? `Die gewählte Tuchtextur konnte nicht geladen werden (HTTP ${responseStatus}).`
+        : 'Die gewählte Tuchtextur konnte nicht geladen werden. Bitte „Neu laden“ wählen.';
+    textureFailure = { url: requestUrl, status: responseStatus };
+    console.warn('[EclipseAwningConfigurator] Tuchtextur konnte nicht geladen werden.', {
+      asset: 'texture', url: requestUrl, status: responseStatus,
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
     syncMessage();
     requestDraw();
   } finally {
@@ -1273,12 +1314,20 @@ async function loadModel() {
   modelAbort = controller;
   modelError = '';
   textureError = '';
+  modelFailure = null;
+  textureFailure = null;
   loading = true;
   setCanvasLabel();
   syncMessage();
+  const requestUrl = modelUrl();
+  const requestedModel = props.model;
+  let responseStatus                = null;
   try {
-    const response = await fetch(modelUrl(), { signal: controller.signal, credentials: 'same-origin' });
-    if (!response.ok) throw new Error(`3D-Modell konnte nicht geladen werden (${response.status}).`);
+    const response = await fetch(requestUrl, { signal: controller.signal, credentials: 'same-origin' });
+    responseStatus = response.status;
+    if (!response.ok) throw new Error(response.status === 404
+      ? 'Das 3D-Modell wurde nicht gefunden (HTTP 404).'
+      : `Das 3D-Modell konnte nicht geladen werden (HTTP ${response.status}).`);
     const buffer = await response.arrayBuffer();
     if (disposed || requestId !== modelRequest || controller.signal.aborted || !gl) return;
     uploadGlb(buffer);
@@ -1291,6 +1340,10 @@ async function loadModel() {
     if (disposed || requestId !== modelRequest || controller.signal.aborted) return;
     disposeGpu();
     modelError = cause instanceof Error ? cause.message : 'Die 3D-Vorschau konnte nicht geladen werden.';
+    modelFailure = { url: requestUrl, status: responseStatus };
+    console.warn('[EclipseAwningConfigurator] 3D-Modell konnte nicht geladen werden.', {
+      asset: 'model', model: requestedModel, url: requestUrl, status: responseStatus, message: modelError,
+    });
   } finally {
     if (!disposed && requestId === modelRequest) {
       loading = false;
@@ -1409,6 +1462,8 @@ listen(canvas, 'webglcontextlost', ((event       ) => {
   vaos.length = 0;
   activeTexture = null;
   loading = false;
+  modelFailure = null;
+  textureFailure = null;
   modelError = 'Die 3D-Ansicht wurde vom Browser pausiert. Sie wird nach Wiederherstellung neu geladen.';
   syncMessage();
 })                 );
@@ -1497,6 +1552,15 @@ function hasUsablePrice(product     )          {
   return true;
 }
 
+/** IO bundleSetting=0 replaces a bundle with its components in the real basket. */
+function bundlePurchaseIssue(product     , App     )                {
+  if (product?.variation?.bundleType === 'bundle_item') return 'catalog-points-to-bundle-component';
+  if (product?.variation?.bundleType !== 'bundle') return null;
+  const setting = App?.bundleSetting;
+  if (setting === 1 || setting === 2 || setting === '1' || setting === '2') return null;
+  return setting === 0 || setting === '0' ? 'native-basket-would-split-bundle' : 'unverified-native-bundle-setting';
+}
+
 async function installNativeVariation(store     , document     )                {
   const itemId = Number(document.data.item.id);
   if (!store.state.items[itemId]) {
@@ -1508,17 +1572,79 @@ async function installNativeVariation(store     , document     )                
   store.commit(`${itemId}/setVariationMarkInvalidProps`, false);
 }
 
+let purchaseScope = 0;
+const isolatedRuntimeMessage = 'Der Kaufbereich für diese Artikelseite ist noch nicht verfügbar. Bitte laden Sie ihn erneut oder öffnen Sie die Produktseite der Auswahl.';
+
+/**
+ * Reuse the installed Ceres calculations and property validation, with fresh state.
+ * BaseItemModule.registerItem closes over Ceres' GLOBAL store; copying its actions
+ * would therefore overwrite the PDP. loadVariation also changes the page URL.
+ * Only the two native basket/component actions cross this private store boundary.
+ */
+function createIsolatedPurchaseStore(rootStore     , Vuex     , itemId        )      {
+  const base = rootStore?._modules?.root?._children?.items;
+  const nativeItem = base?._children?.[rootStore?.state?.items?.mainItemId];
+  const nativeSelect = nativeItem?._children?.variationSelect;
+  const rawBase = base?._rawModule;
+  const rawItem = nativeItem?._rawModule;
+  const rawSelect = nativeSelect?._rawModule;
+  const hasFunctions = (object     , names          ) => names.every(name => typeof object?.[name] === 'function');
+  if (typeof Vuex?.Store !== 'function' || rootStore?.constructor !== Vuex.Store ||
+    !rootStore.state.basket || !/^eam_\d+$/.test(itemId) ||
+    ![rawBase, rawItem, rawSelect].every(raw => typeof raw?.state === 'function') ||
+    rawBase.namespaced || !rawItem.namespaced || !rawSelect.namespaced ||
+    !hasFunctions(rawBase.mutations, ['setMainItemId', 'setIsAddToBasketLoading']) ||
+    !hasFunctions(rawBase.getters, ['currentItemVariation', 'itemSetTotalPrice', 'itemSetAllVariationSelected']) ||
+    !hasFunctions(rawItem.mutations, ['setVariation', 'setVariationOrderQuantity', 'setVariationOrderProperty', 'setVariationPropertySurcharges', 'setVariationMarkInvalidProps']) ||
+    !hasFunctions(rawItem.getters, ['currentItemVariation', 'variationTotalPrice', 'variationBasePrice', 'variationGraduatedPrice', 'variationGroupedProperties', 'variationMissingProperties']) ||
+    !hasFunctions(rawSelect.mutations, ['setIsVariationSelected']) ||
+    !rootStore._actions?.addBasketItem || !rootStore._actions?.loadComponent || !rootStore._mutations?.setIsBasketLoading) {
+    throw new Error(isolatedRuntimeMessage);
+  }
+  const freshModule = (raw     ) => ({
+    namespaced: !!raw.namespaced,
+    state: JSON.parse(JSON.stringify(raw.state())),
+    getters: { ...raw.getters },
+    mutations: { ...raw.mutations },
+    // Deliberately do not copy actions or registered children from the page.
+  });
+  const localStore = new Vuex.Store({
+    devtools: false,
+    state: { basket: rootStore.state.basket },
+    actions: {
+      addBasketItem(_context     , payload     ) { return rootStore.dispatch('addBasketItem', payload); },
+      loadComponent(_context     , payload     ) { return rootStore.dispatch('loadComponent', payload); },
+    },
+    mutations: {
+      setIsBasketLoading(_state     , value         ) { rootStore.commit('setIsBasketLoading', value); },
+    },
+    modules: {
+      items: {
+        ...freshModule(rawBase),
+        modules: {
+          [itemId]: { ...freshModule(rawItem), modules: { variationSelect: freshModule(rawSelect) } },
+        },
+      },
+    },
+  });
+  localStore.commit('setMainItemId', itemId);
+  return localStore;
+}
+
 function createCommerceController(host             , options                 )                 {
   let sequence = 0;
   let disposed = false;
   let controller                         = null;
   let purchaseVm      = null;
-  let mountedItemId = 0;
+  let purchaseRenderError = false;
+  let mountedItemId                  = 0;
+  let isolatedStore      = null;
   let selection                 = null;
   let debounceTimer = 0;
   let unsubscribeStore                      = null;
   let currentDocument      = null;
   let contextKey = '';
+  const initializedProperties = new WeakMap             ();
 
   const message = document.createElement('div');
   message.className = 'eam-commerce-message';
@@ -1545,7 +1671,7 @@ function createCommerceController(host             , options                 )  
     if (!win.Vue || !win.ceresStore || !win.App || !win.Vue.options?.components?.['single-add-to-basket']) {
       throw new Error('Der Kaufbereich ist momentan nicht verfügbar. Bitte laden Sie die Seite neu.');
     }
-    return { Vue: win.Vue, store: win.ceresStore, App: win.App };
+    return { Vue: win.Vue, Vuex: win.Vuex, store: win.ceresStore, App: win.App };
   }
   function productUrl(product     )                {
     try {
@@ -1575,9 +1701,64 @@ function createCommerceController(host             , options                 )  
       purchaseVm = null;
     }
     mountedItemId = 0;
+    purchaseRenderError = false;
     mount.replaceChildren();
   }
+  function disposeIsolatedStore() {
+    // Vuex 3 has two private Vue instances; neither belongs to the page store.
+    isolatedStore?._vm?.$destroy();
+    isolatedStore?._watcherVM?.$destroy();
+    isolatedStore = null;
+  }
+  function scopePropertyInputs(component     ) {
+    if (!isolatedStore || !component.$el?.querySelectorAll) return;
+    const prefix = String(mountedItemId) + '_';
+    for (const field of component.$el.querySelectorAll('input, select, textarea')) {
+      const oldId = field.getAttribute('id');
+      if (oldId && !oldId.startsWith(prefix)) {
+        // The native text/select IDs are not unique when the PDP also has them.
+        const scopedId = prefix + component._uid + '_' + oldId;
+        field.setAttribute('id', scopedId);
+        for (const label of component.$el.querySelectorAll('label[for]')) {
+          if (label.getAttribute('for') === oldId) label.setAttribute('for', scopedId);
+        }
+      }
+      const name = field.getAttribute('name');
+      if (name && !name.startsWith(prefix)) field.setAttribute('name', prefix + name);
+    }
+  }
+  function resetLocalPropertyInputs() {
+    if (!isolatedStore || disposed || !purchaseVm || !currentDocument ||
+      Number(currentDocument.data.variation.id) !== selection?.variationId) return;
+    const visit = (component     ) => {
+      if (component.$options?.name === 'order-property-list-item') {
+        scopePropertyInputs(component);
+        // Run once per document/child, including a late native component mount.
+        if (initializedProperties.get(component) !== currentDocument) {
+          initializedProperties.set(component, currentDocument);
+          if (component.property?.valueType === 'selection') {
+            component.selectionValue = component.property.value || null;
+          } else if (component.property?.valueType === 'file') {
+            if (component.$refs?.fileInput) component.clearSelectedFile();
+          } else {
+            component.inputValue = component.property?.value || '';
+          }
+        }
+      }
+      for (const child of component.$children || []) visit(child);
+    };
+    visit(purchaseVm);
+  }
+  function afterPropertiesMounted() {
+    // The wrapper is assigned only after synchronous child mounts have finished.
+    const Vue = (window       ).Vue;
+    if (Vue) void Vue.nextTick(() => {
+      if (isolatedStore) resetLocalPropertyInputs();
+      else emitVariationChanged();
+    });
+  }
   function emitVariationChanged() {
+    if (isolatedStore) { resetLocalPropertyInputs(); return; }
     if (disposed || !currentDocument || Number(currentDocument.data.variation.id) !== selection?.variationId) return;
     document.dispatchEvent(new CustomEvent('onVariationChanged', {
       detail: { itemId: Number(currentDocument.data.item.id), documents: [currentDocument], attributes: currentDocument.data.attributes || [] },
@@ -1601,8 +1782,8 @@ function createCommerceController(host             , options                 )  
       retrySelection();
     });
   }
-  function mountPurchase(itemId        , Vue     , store     , App     ) {
-    if (purchaseVm && mountedItemId === itemId) return;
+  function mountPurchase(itemId                 , Vue     , store     , App     ) {
+    if (purchaseVm && mountedItemId === itemId && !purchaseRenderError) return;
     disposePurchase();
     const point = document.createElement('div');
     mount.appendChild(point);
@@ -1623,8 +1804,12 @@ function createCommerceController(host             , options                 )  
           } catch { return fallbackText; }
         },
       },
+      updated() { resetLocalPropertyInputs(); },
       errorCaptured(error     ) {
-        showMessage('Der Kaufbereich konnte nicht vollständig geladen werden. Bitte versuchen Sie es erneut.', true);
+        if (disposed || this._isDestroyed) return false;
+        purchaseRenderError = true;
+        showMessage('Der Kaufbereich konnte nicht vollständig geladen werden. Bitte versuchen Sie es erneut.', true,
+          productUrl(currentDocument?.data));
         options.onStatus('Kaufbereich momentan nicht verfügbar', false);
         console.warn('[EclipseAwningConfigurator] Native Kaufkomponente:', error?.message || String(error));
         return false;
@@ -1646,7 +1831,7 @@ function createCommerceController(host             , options                 )  
         ]));
         if (item.variation.bundleType === 'bundle') blocks.push(h('single-item-bundle'));
         if (item.filter.isSalable && this.groupedProperties.length) blocks.push(h('order-property-list', {
-          on: { 'hook:mounted': emitVariationChanged },
+          on: { 'hook:mounted': afterPropertiesMounted, 'hook:updated': resetLocalPropertyInputs },
         }));
         if (Array.isArray(item.prices.graduatedPrices)) blocks.push(h('graduated-prices'));
         blocks.push(h('div', { class: 'eam-native-availability' }, [h('item-availability')]));
@@ -1661,7 +1846,7 @@ function createCommerceController(host             , options                 )  
   async function load(current         , requestId        ) {
     let responseUrl                = null;
     try {
-      const { Vue, store, App } = runtime();
+      const { Vue, Vuex, store, App } = runtime();
       ensureSubscription(store);
       if (disposed || requestId !== sequence) return;
       controller = new AbortController();
@@ -1690,10 +1875,21 @@ function createCommerceController(host             , options                 )  
       const product = itemDocument.data;
       responseUrl = productUrl(product);
       options.onProduct(product, responseUrl);
-      // Item sets have a global LTS context. Never change another item's context.
-      if (product.item.itemType === 'set' || store.state.items?.isItemSet || App.isItemView) {
+      // A selected item set still needs Ceres' full native set-component UI.
+      // Standard products on a set PDP are safe in their independent context.
+      if (product.item.itemType === 'set' || (!App.isItemView && store.state.items?.isItemSet)) {
         showMessage('Für diese Auswahl können Sie die Bestellung auf der Produktseite abschließen.', false, responseUrl);
         options.onStatus('Bitte auf der Produktseite fortfahren', false);
+        return;
+      }
+      const bundleIssue = bundlePurchaseIssue(product, App);
+      if (bundleIssue) {
+        showMessage('Diese Markise kann derzeit nicht als vollständiges Paket bestellt werden.', false, responseUrl);
+        options.onStatus('Paketbestellung derzeit nicht verfügbar', false);
+        console.warn('[EclipseAwningConfigurator] Paketbestellung nicht freigegeben.', {
+          reason: bundleIssue, itemId: current.itemId, variationId: current.variationId,
+          bundleType: product.variation.bundleType, bundleSetting: App.bundleSetting,
+        });
         return;
       }
       if (!hasUsablePrice(product)) {
@@ -1703,13 +1899,37 @@ function createCommerceController(host             , options                 )  
       }
       // Display-only optional metadata expected by the installed native component.
       if (!product.prices.default.lowestPrice) product.prices.default.lowestPrice = { value: null, formatted: '' };
-      currentDocument = itemDocument;
-      await installNativeVariation(store, itemDocument);
+      let purchaseStore = store;
+      let purchaseItemId                  = current.itemId;
+      if (App.isItemView) {
+        purchaseItemId = 'eam_' + (++purchaseScope);
+        // Prepare completely before replacing a previous working scope. A fresh
+        // store also keeps late native file-upload callbacks on their old item.
+        const nextStore = createIsolatedPurchaseStore(store, Vuex, purchaseItemId);
+        const localDocument = JSON.parse(JSON.stringify(itemDocument));
+        try {
+          nextStore.commit(`${purchaseItemId}/setVariation`, { documents: [localDocument] });
+          nextStore.commit(`${purchaseItemId}/variationSelect/setIsVariationSelected`, true);
+          nextStore.commit(`${purchaseItemId}/setVariationMarkInvalidProps`, false);
+        } catch (error) {
+          nextStore._vm?.$destroy();
+          nextStore._watcherVM?.$destroy();
+          throw error;
+        }
+        disposePurchase();
+        disposeIsolatedStore();
+        isolatedStore = nextStore;
+        purchaseStore = nextStore;
+        currentDocument = localDocument;
+      } else {
+        currentDocument = itemDocument;
+        await installNativeVariation(store, itemDocument);
+      }
       if (disposed || requestId !== sequence) return;
-      mountPurchase(current.itemId, Vue, store, App);
+      mountPurchase(purchaseItemId, Vue, purchaseStore, App);
       await Vue.nextTick();
-      if (disposed || requestId !== sequence) return;
-      // Existing native property inputs reset on this documented LTS event.
+      if (disposed || requestId !== sequence || purchaseRenderError) return;
+      // PDP inputs reset locally, never by an event targeting the page's item.
       emitVariationChanged();
       message.hidden = true;
       mount.hidden = false;
@@ -1720,10 +1940,11 @@ function createCommerceController(host             , options                 )  
         : (availability ? availability + ' · Derzeit nicht bestellbar' : 'Derzeit nicht bestellbar'), product.filter.isSalable);
     } catch (error     ) {
       if (disposed || requestId !== sequence) return;
-      showMessage(error?.name === 'AbortError'
+      const unsupportedPdp = error?.message === isolatedRuntimeMessage;
+      showMessage(unsupportedPdp ? isolatedRuntimeMessage : error?.name === 'AbortError'
         ? 'Die Produktabfrage hat zu lange gedauert. Bitte versuchen Sie es erneut.'
         : 'Preis und Verfügbarkeit konnten momentan nicht geladen werden. Bitte versuchen Sie es erneut.', true, responseUrl);
-      options.onStatus('Verfügbarkeit konnte nicht geladen werden', false);
+      options.onStatus(unsupportedPdp ? 'Kaufbereich der Artikelseite noch nicht verfügbar' : 'Verfügbarkeit konnte nicht geladen werden', false);
       options.onProduct(null, null);
       console.warn('[EclipseAwningConfigurator] Produkt konnte nicht geladen werden.', {
         itemId: current.itemId, variationId: current.variationId, message: error?.message || String(error),
@@ -1765,6 +1986,7 @@ function createCommerceController(host             , options                 )  
       unsubscribeStore?.();
       retry.removeEventListener('click', retrySelection);
       disposePurchase();
+      disposeIsolatedStore();
       host.replaceChildren();
     },
   };
@@ -1772,11 +1994,83 @@ function createCommerceController(host             , options                 )  
 
 return {createCommerceController, extractVariation, hasUsablePrice, installNativeVariation};
 })();
+const Context = (() => {
+const { families, resolveSelection } = Catalog;
+                                              
+
+/** Prefer the currently loaded script over URLs baked into saved ShopBuilder HTML. */
+function resolveResourceBase(scriptSrc               , scriptBase               , legacyBase               , pageUrl        )         {
+  const safeUrl = (value               ) => {
+    if (!value) return null;
+    try {
+      const url = new URL(value, pageUrl);
+      return ['http:', 'https:'].includes(url.protocol) ? url : null;
+    } catch { return null; }
+  };
+  const script = safeUrl(scriptSrc);
+  if (script && /\/js\/awning-configurator\.js$/.test(script.pathname)) {
+    return new URL('../', script).href.replace(/\/+$/, '');
+  }
+  const explicit = safeUrl(scriptBase);
+  if (explicit) {
+    explicit.search = '';
+    explicit.hash = '';
+    return explicit.href.replace(/\/+$/, '');
+  }
+  const legacy = safeUrl(legacyBase);
+  if (legacy) {
+    legacy.search = '';
+    legacy.hash = '';
+    return legacy.href.replace(/\/+$/, '').replace(/\/assets$/, '');
+  }
+  throw new Error('Der aktuelle Pfad der Konfigurator-Dateien konnte nicht ermittelt werden.');
+}
+
+/** Exact catalog lookup. Product and variation IDs must both match the current PDP. */
+function selectionForPageVariation(itemId        , variationId        )                   {
+  if (!Number.isSafeInteger(itemId) || !Number.isSafeInteger(variationId) || itemId <= 0 || variationId <= 0) return null;
+  for (const family of families) {
+    const variant = family.variants.find((entry) => entry.itemId === itemId && entry.variationId === variationId);
+    if (!variant) continue;
+    const housing = family.housings.find((entry) => entry.name === variant.housing);
+    if (!housing) return null;
+    const result = resolveSelection({
+      model: family.id,
+      operation: variant.operation || family.defaultSelection.operation,
+      sizeKey: `${variant.widthMm}x${variant.projectionMm}`,
+      housing: housing.id,
+      fabric: variant.fabricCode,
+    });
+    return result.variant?.variationId === variationId ? { ...result.selection } : null;
+  }
+  return null;
+}
+
+function readPageSelection(win     )                                                  {
+  if (!win.App?.isItemView) return { ready: true, selection: null };
+  const store = win.ceresStore;
+  const mainItemId = Number(store?.state?.items?.mainItemId);
+  let current      = null;
+  try {
+    current = store?.getters?.currentItemVariation || (mainItemId > 0 ? store?.getters?.[`${mainItemId}/currentItemVariation`] : null);
+  } catch { return { ready: false, selection: null }; }
+  const itemId = Number(current?.item?.id);
+  const variationId = Number(current?.variation?.id);
+  if (!Number.isSafeInteger(itemId) || itemId <= 0 || !Number.isSafeInteger(variationId) || variationId <= 0) {
+    return { ready: false, selection: null };
+  }
+  if (mainItemId > 0 && mainItemId !== itemId) return { ready: false, selection: null };
+  return { ready: true, selection: selectionForPageVariation(itemId, variationId) };
+}
+
+return {resolveResourceBase, selectionForPageVariation, readPageSelection};
+})();
 const Application = (() => {
 const { families, defaults, resolveSelection } = Catalog;
                                                                           
 const { createAwningViewer } = Viewer;
 const { createCommerceController } = Commerce;
+const { resolveResourceBase, readPageSelection } = Context;
 
 let nextInstance = 0;
 
@@ -1813,10 +2107,10 @@ function renderShopHtml(target             , html        ) {
   target.replaceChildren(template.content);
 }
 
-function createConfigurator(root             ) {
+function createConfigurator(root             , currentScriptSrc               , currentScriptBase               ) {
   const instanceId = 'eam-' + (++nextInstance);
-  const assetBase = (root.dataset.assetBase || '').replace(/\/+$/, '');
-  if (!assetBase) throw new Error('Die Konfigurator-Dateien sind nicht verfügbar.');
+  const resourceBase = resolveResourceBase(currentScriptSrc, currentScriptBase, root.dataset.assetBase || null, window.location.href);
+  const textureBase = resourceBase + '/images/awning-configurator/textures';
   const defaultModel = families.find((family) => family.id === root.dataset.defaultModel)?.id || 'vollkassette';
   const allowModelSwitch = root.dataset.allowModelSwitch !== 'false';
   const showDescription = root.dataset.showDescription !== 'false';
@@ -1826,7 +2120,9 @@ function createConfigurator(root             ) {
     halbkassette: { ...defaults.halbkassette },
     gelenkarm: { ...defaults.gelenkarm },
   };
-  let resolved = resolveSelection(remembered[defaultModel]);
+  const pageSelection = root.dataset.useCurrentVariation !== 'false' ? readPageSelection(window).selection : null;
+  let resolved = resolveSelection(pageSelection || remembered[defaultModel]);
+  remembered[resolved.selection.model] = { ...resolved.selection };
   let openPanel                = null;
   let lastVariationId = 0;
   let disposed = false;
@@ -1871,13 +2167,13 @@ function createConfigurator(root             ) {
   root.replaceChildren(scene, commerceRow, details);
 
   function textureUrl(state                   ) {
-    return assetBase + '/textures/' + state.selection.model + '/' + state.fabric.file;
+    return textureBase + '/' + state.selection.model + '/' + state.fabric.file;
   }
   const viewer = createAwningViewer(viewerHost, {
     model: resolved.selection.model, housingColor: resolved.housing.hex,
     fabricTexture: textureUrl(resolved), widthMm: resolved.size.widthMm,
     projectionMm: resolved.size.projectionMm,
-  }, assetBase);
+  }, resourceBase);
   const commerce = createCommerceController(commerceHost, {
     onStatus(message, salable) {
       if (disposed) return;
@@ -1961,7 +2257,7 @@ function createConfigurator(root             ) {
       button.setAttribute('aria-label', fabric.name);
       const swatch = node('span', 'eam-swatch-circle');
       const img = node('img');
-      img.src = assetBase + '/textures/' + resolved.selection.model + '/' + fabric.file;
+      img.src = textureBase + '/' + resolved.selection.model + '/' + fabric.file;
       img.alt = '';
       img.loading = 'lazy';
       img.width = 40;
@@ -2055,8 +2351,19 @@ function createConfigurator(root             ) {
 function start() {
   const win = window       ;
   if (win.EclipseAwningConfigurator?.started) return;
+  // Capture while this deferred script is executing, before DOMContentLoaded.
+  const script = (document.currentScript || document.getElementById('eclipse-awning-configurator-script'))                            ;
+  const currentScriptSrc = script?.src || null;
+  const currentScriptBase = script?.dataset.eamResourceBase || null;
   const instances = new Map                                                    ();
+  const waitingSince = new Map                     ();
+  let retryTimer = 0;
+  function scheduleContextRetry() {
+    if (retryTimer) return;
+    retryTimer = window.setTimeout(() => { retryTimer = 0; mountAll(); }, 100);
+  }
   function mountAll() {
+    for (const root of waitingSince.keys()) if (!root.isConnected) waitingSince.delete(root);
     for (const [root, handle] of instances) {
       if (!root.isConnected) { handle.destroy(); instances.delete(root); }
     }
@@ -2066,14 +2373,20 @@ function start() {
         root.textContent = 'Der Markisen-Konfigurator ist bereits weiter oben auf dieser Seite verfügbar.';
         return;
       }
-      try { instances.set(root, createConfigurator(root)); }
+      if (win.App?.isItemView && root.dataset.useCurrentVariation !== 'false' && !readPageSelection(win).ready) {
+        const since = waitingSince.get(root) ?? Date.now();
+        waitingSince.set(root, since);
+        if (Date.now() - since < 8000) { scheduleContextRetry(); return; }
+      }
+      waitingSince.delete(root);
+      try { instances.set(root, createConfigurator(root, currentScriptSrc, currentScriptBase)); }
       catch (error) {
         root.textContent = 'Der Markisen-Konfigurator konnte nicht geladen werden. Bitte laden Sie die Seite neu.';
         console.error('[EclipseAwningConfigurator]', error);
       }
     });
   }
-  win.EclipseAwningConfigurator = { version: '1.0.1', started: true, mountAll };
+  win.EclipseAwningConfigurator = { version: '1.1.0', started: true, mountAll };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountAll, { once: true });
   else mountAll();
   const observer = new MutationObserver((records) => {

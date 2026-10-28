@@ -3,17 +3,18 @@ import { stripTypeScriptTypes } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// A fixed four-module build, with no npm download and no runtime framework bundle.
+// A fixed local module build, with no npm download and no runtime framework bundle.
 // Only the known local module exports/imports are rewritten; this is not a general bundler.
 const root = path.dirname(fileURLToPath(import.meta.url));
 const plan = [
   ['catalog', 'Catalog', ['families', 'defaults', 'allVariants', 'resolveSelection']],
   ['viewer', 'Viewer', ['createAwningViewer']],
   ['commerce', 'Commerce', ['createCommerceController', 'extractVariation', 'hasUsablePrice', 'installNativeVariation']],
+  ['context', 'Context', ['resolveResourceBase', 'selectionForPageVariation', 'readPageSelection']],
   ['app', 'Application', ['start', 'renderShopHtml']],
 ];
 const imports = Object.fromEntries(plan.map(([name, local]) => [name, local]));
-const out = ['/* EclipseAwningConfigurator 1.0.1 | Four & More GmbH | built from build-src */', '(function () {', '"use strict";'];
+const out = ['/* EclipseAwningConfigurator 1.1.0 | Four & More GmbH | built from build-src */', '(function () {', '"use strict";'];
 for (const [name, local, exports] of plan) {
   const source = await readFile(path.join(root, 'build-src', name + '.ts'), 'utf8');
   let code = stripTypeScriptTypes(source, { mode: 'strip' });

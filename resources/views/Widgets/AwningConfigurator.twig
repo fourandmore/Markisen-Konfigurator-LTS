@@ -1,10 +1,10 @@
-{% set pluginBase = plugin_path('EclipseAwningConfigurator') %}
 <section class="widget widget-eclipse-awning-configurator{% if eam.customClass %} {{ eam.customClass | e('html_attr') }}{% endif %}">
     {% if eam.headline | length > 0 %}
         <h2 class="eam-heading">{{ eam.headline | e }}</h2>
     {% endif %}
 
     {% if isPreview %}
+        {% set pluginBase = plugin_path('EclipseAwningConfigurator') %}
         <div class="eam-builder-preview" style="overflow:hidden;border:1px solid #dce6e9;border-radius:18px;background:#f4f8f9;color:#223c45;">
             <div style="display:flex;flex-wrap:wrap;align-items:center;gap:24px;padding:24px;">
                 <img src="{{ pluginBase }}/images/widget-preview.svg" alt="" width="350" height="120" style="display:block;max-width:100%;height:auto;flex:0 1 350px;">
@@ -17,6 +17,8 @@
             <dl style="display:grid;grid-template-columns:minmax(130px,1fr) minmax(140px,2fr);gap:8px 16px;margin:0;padding:18px 24px;border-top:1px solid #dce6e9;background:#fff;font-size:13px;">
                 <dt>{{ trans('EclipseAwningConfigurator::Widget.defaultModelLabel') }}</dt>
                 <dd style="margin:0;">{{ trans(eam.modelLabelKey) }}</dd>
+                <dt>{{ trans('EclipseAwningConfigurator::Widget.useCurrentVariationLabel') }}</dt>
+                <dd style="margin:0;">{{ trans(eam.useCurrentVariation ? 'EclipseAwningConfigurator::Widget.enabled' : 'EclipseAwningConfigurator::Widget.disabled') }}</dd>
                 <dt>{{ trans('EclipseAwningConfigurator::Widget.allowModelSwitchLabel') }}</dt>
                 <dd style="margin:0;">{{ trans(eam.allowModelSwitch ? 'EclipseAwningConfigurator::Widget.enabled' : 'EclipseAwningConfigurator::Widget.disabled') }}</dd>
                 <dt>{{ trans('EclipseAwningConfigurator::Widget.showDescriptionLabel') }}</dt>
@@ -27,8 +29,8 @@
         </div>
     {% else %}
         <div v-pre class="eam-root" data-eam-root
-             data-asset-base="{{ pluginBase | e('html_attr') }}/assets"
              data-default-model="{{ eam.defaultModel | e('html_attr') }}"
+             data-use-current-variation="{{ eam.useCurrentVariation ? 'true' : 'false' }}"
              data-allow-model-switch="{{ eam.allowModelSwitch ? 'true' : 'false' }}"
              data-show-description="{{ eam.showDescription ? 'true' : 'false' }}"
              data-show-technical="{{ eam.showTechnical ? 'true' : 'false' }}">

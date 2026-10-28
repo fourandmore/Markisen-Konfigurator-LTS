@@ -47,6 +47,14 @@ class AwningConfiguratorWidget extends BaseWidget
                     ]
                 ]
             ],
+            'useCurrentVariation' => [
+                'type' => 'checkbox',
+                'defaultValue' => true,
+                'options' => [
+                    'name' => 'Widget.useCurrentVariationLabel',
+                    'tooltip' => 'Widget.useCurrentVariationTooltip'
+                ]
+            ],
             'allowModelSwitch' => [
                 'type' => 'checkbox',
                 'defaultValue' => true,
@@ -102,6 +110,7 @@ class AwningConfiguratorWidget extends BaseWidget
                 'headline' => is_string($headline) ? trim($headline) : '',
                 'defaultModel' => $model,
                 'modelLabelKey' => $modelKeys[$model],
+                'useCurrentVariation' => $this->readBoolean($widgetSettings, 'useCurrentVariation', true),
                 'allowModelSwitch' => $this->readBoolean($widgetSettings, 'allowModelSwitch', true),
                 'showDescription' => $this->readBoolean($widgetSettings, 'showDescription', true),
                 'showTechnical' => $this->readBoolean($widgetSettings, 'showTechnical', true),

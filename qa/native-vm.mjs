@@ -7,12 +7,13 @@ import { installNativeVariation, extractVariation, createCommerceController } fr
 
 const reference = resolve(process.env.EAM_CERES_DIST || resolve(import.meta.dirname, '../../reference_lts/ceres/resources/js/dist'));
 const events = new Map();
+const dispatchedEvents = [];
 const bodyClasses = new Set();
 const document = {
   getElementById: () => ({ value: 'local-qa-token' }),
   body: { classList: { contains: key => bodyClasses.has(key), add: key => bodyClasses.add(key), remove: key => bodyClasses.delete(key) } },
   addEventListener(name, handler) { const list = events.get(name) || []; list.push(handler); events.set(name, list); },
-  dispatchEvent(event) { for (const handler of events.get(event.type) || []) handler(event); },
+  dispatchEvent(event) { dispatchedEvents.push(event); for (const handler of events.get(event.type) || []) handler(event); },
 };
 class CustomEvent { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } }
 const context = vm.createContext({
@@ -35,6 +36,7 @@ const requireModule = context.window.qaRequire;
 // component logic/VNodes, not DOM layout or browser event dispatch.
 delete context.window;
 const Vue = requireModule('./node_modules/vue/dist/vue.js');
+const Vuex = requireModule('./node_modules/vuex/dist/vuex.esm.js').default;
 context.Vue = Vue;
 const storeModule = requireModule('./resources/js/src/app/store/index.js');
 const store = storeModule.createStore();
@@ -63,6 +65,7 @@ function deferred() {
 }
 const posts = [];
 let failNext = false;
+let productForCart = variationId => product(variationId);
 context.$ = {
   Deferred: deferred,
   parseJSON: JSON.parse,
@@ -77,7 +80,7 @@ context.$ = {
         failNext = false;
         response.reject({ status: 409, responseText: JSON.stringify({ data: { exceptionCode: 111, placeholder: {} } }) });
       } else {
-        const variation = product(posted.variationId);
+        const variation = productForCart(posted.variationId);
         const item = { id: posts.length, variationId: posted.variationId, quantity: posted.quantity, price: variation.data.prices.default.unitPrice.value, variation, basketItemOrderParams: posted.basketItemOrderParams };
         const basket = { ...emptyBasket(), itemQuantity: posted.quantity, itemSum: item.price * posted.quantity };
         response.resolve({ data: item });
@@ -94,8 +97,13 @@ store.commit('setBasketItems', []);
 
 function instantiate(name, props = {}, parent = null) {
   const def = requireModule('./resources/js/src/app/components/' + name + '.vue').default;
-  return new Vue({ ...def, parent, store, propsData: props });
+  return new Vue({ ...def, parent, store: parent?.$store || store, propsData: props });
 }
+function instantiateVNode(node, parent) {
+  assert.ok(node?.componentOptions, 'the actual compiled template exposes its native child');
+  return new node.componentOptions.Ctor({ parent, store: parent.$store, propsData: node.componentOptions.propsData });
+}
+function mounted(component) { for (const hook of component.$options.mounted || []) hook.call(component); }
 function texts(node) { return !node ? '' : (node.text || '') + (node.children || []).map(texts).join(''); }
 function descendants(node) { return !node ? [] : [node, ...(node.children || []).flatMap(descendants)]; }
 const settle = async () => { await Vue.nextTick(); await new Promise(resolve => setImmediate(resolve)); await Vue.nextTick(); };
@@ -185,7 +193,7 @@ class Element {
 document.createElement = tag => new Element(tag);
 globalThis.document = document;
 globalThis.CustomEvent = CustomEvent;
-globalThis.window = { Vue, ceresStore: store, App: context.App, setTimeout, clearTimeout,
+globalThis.window = { Vue, Vuex, ceresStore: store, App: context.App, setTimeout, clearTimeout,
   location: { href: 'http://localhost/qa', origin: 'http://localhost' } };
 for (const [tag, name] of [
   ['item-price', 'item/ItemPrice'], ['order-property-list', 'item/OrderPropertyList'],
@@ -197,10 +205,11 @@ Vue.mixin({ created() { if (this.$options.name === 'EclipseNativePurchase') purc
 const gets = [];
 let delayRequests = false;
 let mismatchedPayload = false;
+let productForGet = variationId => product(variationId, { itemId: 200 });
 globalThis.fetch = (url, options) => {
   gets.push({ url, options });
   const variationId = Number(new URL(url).pathname.split('/').filter(Boolean).pop());
-  const response = () => new Response(JSON.stringify({ data: { documents: [product(mismatchedPayload ? 9999 : variationId, { itemId: 200 })] } }), { headers: { 'Content-Type': 'application/json' } });
+  const response = () => new Response(JSON.stringify({ data: { documents: [productForGet(mismatchedPayload ? 9999 : variationId)] } }), { headers: { 'Content-Type': 'application/json' } });
   if (!delayRequests) return Promise.resolve(response());
   return new Promise(resolve => { gets.at(-1).resolve = () => resolve(response()); });
 };
@@ -255,8 +264,322 @@ assert.equal(store.getters['200/currentItemVariation'].variation.id, 2003);
 commerce.destroy();
 assert.equal(host.children.length, 0);
 assert.equal(purchaseInstances[0]._isDestroyed, true);
+
+// Product-detail pages already own a native item context. Exercise a second,
+// isolated purchase context with the original Ceres module factories and Vuex.
+// Native child VNodes are instantiated explicitly because server-mode Vue does
+// not patch a browser DOM. Each controller selection creates a new purchase VM.
+function propertyBranch(owner) {
+  const list = instantiate('item/OrderPropertyList', {}, owner);
+  mounted(list);
+  const groupNode = descendants(list._render()).find(node => node.componentOptions?.tag === 'order-property-list-group');
+  const group = instantiateVNode(groupNode, list);
+  const fieldNode = descendants(group._render()).find(node => node.componentOptions?.tag === 'order-property-list-item');
+  const field = instantiateVNode(fieldNode, group);
+  mounted(field);
+  return { list, group, field, destroy() { [field, group, list].forEach(component => component.$destroy()); } };
+}
+function purchaseBranch(owner) {
+  const price = instantiate('item/ItemPrice', {}, owner);
+  const properties = propertyBranch(owner);
+  const single = instantiate('item/SingleAddToBasket', {}, owner);
+  const add = instantiateVNode(single._render(), single);
+  const quantityNode = descendants(add._render()).find(node => node.componentOptions?.tag === 'quantity-input');
+  const quantity = instantiateVNode(quantityNode, add);
+  quantity.$on('quantity-change', value => add.updateQuantity(value));
+  return { price, properties, single, add, quantity,
+    destroy() { [quantity, add, single, price].forEach(component => component.$destroy()); properties.destroy(); } };
+}
+function enterProperty(field, value) {
+  const input = descendants(field._render()).find(node => node.tag === 'input' && node.data?.attrs?.type === 'text');
+  assert.ok(input?.data?.on?.input, 'native property input contains the original compiled input handlers');
+  for (const handler of [].concat(input.data.on.input)) handler({ target: { value, composing: false } });
+}
+function clone(value) { return JSON.parse(JSON.stringify(value)); }
+context.App.isItemView = true;
+context.App.templateType = 'singleitem';
+context.App.bundleSetting = 1; // Local backend fixture: keep the package parent.
+store.commit('setShowNetPrices', false);
+// Recreate the earlier test item's native module through the real PDP action.
+store.unregisterModule(['items', 100]);
+await store.dispatch('initVariation', { documents: [product(1001, { required: true })] });
+store.commit('100/setVariationOrderQuantity', 4);
+store.commit('100/setVariationOrderProperty', { propertyId: 51, value: 'PDP original' });
+const originalPage = new Vue({ store, provide: { itemId: 100 } });
+const originalPrice = instantiate('item/ItemPrice', {}, originalPage);
+const originalProperties = propertyBranch(originalPage);
+originalProperties.field.inputValue = 'Uncommitted PDP text';
+originalProperties.list.activeSlide = 2;
+assert.equal(store.state.items.mainItemId, 100);
+assert.equal(originalPrice.variationTotalPrice, 624);
+const originalItems = clone(store.state.items);
+const originalUrl = window.location.href;
+const originalVariationEvents = dispatchedEvents.filter(event => event.type === 'onVariationChanged').length;
+const rootActions = [];
+const rootMutations = [];
+const unsubscribeActions = store.subscribeAction(action => rootActions.push(action.type));
+const unsubscribeMutations = store.subscribe(mutation => rootMutations.push(mutation.type));
+function assertPageUnchanged(label) {
+  assert.deepEqual(clone(store.state.items), originalItems, label + ': complete original item state is unchanged');
+  assert.equal(store.state.items.mainItemId, 100, label + ': original main item remains selected');
+  assert.equal(originalPrice.variationTotalPrice, 624, label + ': native page price remains intact');
+  assert.equal(originalProperties.field.inputValue, 'Uncommitted PDP text', label + ': native PDP input is untouched');
+  assert.equal(originalProperties.list.activeSlide, 2, label + ': native PDP property slider is untouched');
+  assert.equal(dispatchedEvents.filter(event => event.type === 'onVariationChanged').length, originalVariationEvents,
+    label + ': no global variation-change event is emitted');
+  assert.equal(window.location.href, originalUrl, label + ': page URL is unchanged');
+  assert.equal(context.App.isItemView, true, label + ': real PDP mode stays enabled');
+}
+mismatchedPayload = false;
+productForGet = variationId => {
+  const fixture = product(variationId, { itemId: variationId >= 3000 ? 300 : 100, required: true });
+  if (variationId === 3001) {
+    fixture.data.variation.bundleType = 'bundle';
+    fixture.data.bundleComponents = [
+      { ...product(93001, { itemId: 930 }), quantity: 1 },
+      { ...product(93002, { itemId: 931 }), quantity: 2 },
+    ];
+  } else if (variationId === 3002) {
+    fixture.data.variation.bundleType = 'bundle_item';
+  }
+  return fixture;
+};
+productForCart = productForGet;
+const pdpStatuses = [];
+const pdpProducts = [];
+const pdpHost = new Element('pdp-host');
+const pdpCommerce = createCommerceController(pdpHost, {
+  onStatus: (message, salable) => pdpStatuses.push({ message, salable }),
+  onProduct: (item, url) => pdpProducts.push({ item, url }),
+});
+const purchasesBeforePdp = purchaseInstances.length;
+pdpCommerce.select({ itemId: 100, variationId: 1002 });
+await waitForSelection();
+assert.equal(pdpHost.children[1].hidden, false, 'a PDP gets working native purchase controls');
+assert.equal(pdpStatuses.at(-1).salable, true);
+assert.equal(purchaseInstances.length, purchasesBeforePdp + 1);
+const pdpPurchase = purchaseInstances.at(-1);
+const privateStore = pdpPurchase.$store;
+const scope = pdpPurchase._provided.itemId;
+assert.notEqual(privateStore, store, 'PDP configuration has its own genuine Vuex store');
+assert.ok(privateStore instanceof Vuex.Store);
+assert.match(scope, /^eam_\d+$/);
+assert.equal(privateStore.state.basket, store.state.basket, 'native basket state remains shared');
+assert.equal(privateStore.getters[`${scope}/currentItemVariation`].item.id, 100);
+assert.equal(privateStore.getters[`${scope}/currentItemVariation`].variation.id, 1002);
+assert.equal(pdpProducts.at(-1).url, 'http://localhost/qa-markise_100_1002');
+assertPageUnchanged('select same-item alternate variant');
+const localPurchase = purchaseBranch(pdpPurchase);
+assert.equal(localPurchase.price.variationTotalPrice, 749);
+assert.match(texts(localPurchase.price._render()), /749,00/);
+assert.equal(localPurchase.single.currentVariation.variation.id, 1002);
+assert.equal(localPurchase.add.variationId, 1002);
+assert.equal(localPurchase.add.itemId, scope);
+assert.equal(localPurchase.add.allVariationsSelected, true);
+assert.equal(localPurchase.properties.field.itemId, scope);
+const beforeRequired = posts.length;
+localPurchase.add.addToBasket();
+await settle();
+assert.equal(posts.length, beforeRequired, 'native required property prevents a PDP configuration POST');
+assert.equal(privateStore.state.items[scope].variationMarkInvalidProperties, true);
+assertPageUnchanged('required-property rejection');
+enterProperty(localPurchase.properties.field, 'Motor rechts');
+await settle();
+assert.equal(localPurchase.properties.list.variationMissingProperties.length, 0);
+assert.equal(localPurchase.price.variationTotalPrice, 774, 'genuine native price reacts to the isolated surcharge');
+assert.match(texts(localPurchase.price._render()), /774,00/);
+localPurchase.quantity.increaseValue();
+await new Promise(resolve => setTimeout(resolve, 5));
+await settle();
+assert.equal(localPurchase.add.quantity, 2);
+assert.equal(privateStore.state.items[scope].variationOrderQuantity, 2);
+assertPageUnchanged('isolated property and quantity changes');
+bodyClasses.delete('basket-open');
+localPurchase.add.addToBasket();
+await settle();
+await new Promise(resolve => setTimeout(resolve, 5));
+const pdpPost = posts.at(-1);
+assert.equal(posts.length, beforeRequired + 1);
+assert.equal(pdpPost.variationId, 1002);
+assert.equal(pdpPost.quantity, 2);
+assert.equal(pdpPost.basketItemOrderParams[0].propertyId, 51);
+assert.equal(pdpPost.basketItemOrderParams[0].value, 'Motor rechts');
+assert.equal(pdpPost.totalOrderParamsMarkup, 25);
+assert.equal(pdpPost.template, 'Ceres::Basket.Basket');
+assert.equal(store.state.basket.items[0].variationId, 1002);
+assert.equal(store.state.basket.items[0].quantity, 2);
+assert.equal(privateStore.state.items[scope].isAddToBasketLoading, undefined);
+assert.equal(privateStore.state.items.isAddToBasketLoading, 0);
+assert.equal(store.state.basket.isBasketLoading, false);
+assert.ok(bodyClasses.has('basket-open'), 'existing native minicart observes isolated native purchase');
+assert.ok(rootActions.includes('addBasketItem'), 'the original global basket action sends the POST');
+assert.ok(rootActions.includes('loadComponent'), 'native overlay loading is delegated to the original store');
+assertPageUnchanged('successful native PDP basket POST');
+failNext = true;
+localPurchase.add.addToBasket();
+await settle();
+assert.equal(privateStore.state.items.isAddToBasketLoading, 0);
+assert.equal(store.state.basket.isBasketLoading, false);
+assert.equal(store.state.basket.items[0].variationId, 1002);
+assertPageUnchanged('failed native PDP basket POST');
+
+// Another model/item receives fresh local modules; original PDP modules are
+// neither registered again nor used for the alternate selected product.
+pdpCommerce.select({ itemId: 300, variationId: 3001 });
+await waitForSelection();
+const otherPurchase = purchaseInstances.at(-1);
+const otherStore = otherPurchase.$store;
+const otherScope = otherPurchase._provided.itemId;
+assert.equal(pdpPurchase._isDestroyed, true);
+assert.notEqual(otherStore, privateStore);
+assert.notEqual(otherScope, scope);
+assert.equal(otherStore.getters[`${otherScope}/currentItemVariation`].item.id, 300);
+assert.equal(otherStore.getters[`${otherScope}/currentItemVariation`].variation.id, 3001);
+assert.equal(otherStore.state.items[otherScope].variationOrderQuantity, 1);
+assert.equal(otherStore.state.items[otherScope].variationMarkInvalidProperties, false);
+assert.equal(store.state.items[300], undefined);
+assert.equal(store.state.items[scope], undefined);
+assertPageUnchanged('model/item switch');
+const otherBranch = purchaseBranch(otherPurchase);
+assert.equal(otherBranch.price.variationTotalPrice, 599);
+assert.equal(otherBranch.properties.list.variationMissingProperties.length, 1);
+assert.ok(descendants(otherPurchase._render()).some(node => node.componentOptions?.tag === 'single-item-bundle'),
+  'a package exposes the native bundle component in the purchase UI');
+const nativeBundle = instantiate('item/SingleItemBundle', {}, otherPurchase);
+assert.equal(nativeBundle.bundleType, 'bundle');
+assert.deepEqual(clone(nativeBundle.bundleComponents.map(component => component.data.variation.id)), [93001, 93002]);
+enterProperty(otherBranch.properties.field, 'Andere Markise');
+await settle();
+const beforeBundlePost = posts.length;
+otherBranch.add.addToBasket();
+await settle();
+assert.equal(posts.length, beforeBundlePost + 1, 'the package sends exactly one native parent POST');
+assert.equal(posts.at(-1).variationId, 3001);
+assert.equal(posts.at(-1).quantity, 1);
+assert.equal(posts.at(-1).basketItemOrderParams[0].value, 'Andere Markise');
+assert.equal(posts.at(-1).totalOrderParamsMarkup, 25);
+assert.ok(!posts.slice(beforeBundlePost).some(post => [93001, 93002].includes(post.variationId)),
+  'neither package component is independently sent to the cart');
+assert.equal(store.state.basket.items[0].variationId, 3001);
+assert.equal(store.state.basket.items[0].variation.data.item.id, 300);
+assertPageUnchanged('alternate model native basket POST');
+privateStore.commit(`${scope}/setVariationOrderProperty`, { propertyId: 51, value: 'Late former selection callback' });
+await settle();
+assert.equal(otherStore.getters[`${otherScope}/currentItemVariation`].properties[0].property.value, 'Andere Markise',
+  'late callbacks belonging to an old private store cannot affect the next selection');
+assertPageUnchanged('late old-selection callback');
+assert.ok(!rootActions.some(type => type === 'registerItem' || type.endsWith('/loadVariation')),
+  'isolated native purchase never delegates item registration or URL-changing variation loading');
+assert.ok(!rootMutations.some(type => type === 'setMainItemId' || type.startsWith('100/')),
+  'original PDP item mutations are not emitted');
+localPurchase.destroy();
+otherBranch.destroy();
+nativeBundle.$destroy();
+
+// The other supported native backend mode also sends the selected parent once,
+// while the standard bundle component may additionally display its contents.
+context.App.bundleSetting = 2;
+pdpCommerce.select({ itemId: 300, variationId: 3001 });
+await waitForSelection();
+const packageModeTwoPurchase = purchaseInstances.at(-1);
+assert.equal(otherPurchase._isDestroyed, true);
+assert.notEqual(packageModeTwoPurchase, otherPurchase);
+assert.equal(pdpHost.children[1].hidden, false);
+const packageModeTwo = purchaseBranch(packageModeTwoPurchase);
+const modeTwoBundle = instantiate('item/SingleItemBundle', {}, packageModeTwoPurchase);
+const modeTwoContents = instantiateVNode(modeTwoBundle._render(), modeTwoBundle);
+assert.equal(modeTwoContents.showItemBundleItems, true);
+assert.equal(modeTwoContents.bundleComponents.length, 2);
+enterProperty(packageModeTwo.properties.field, 'Paketmodus zwei');
+for (let i = 0; i < 2; i += 1) {
+  packageModeTwo.quantity.increaseValue();
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await settle();
+}
+assert.equal(packageModeTwo.add.quantity, 3);
+const beforeModeTwoPost = posts.length;
+packageModeTwo.add.addToBasket();
+await settle();
+assert.equal(posts.length, beforeModeTwoPost + 1, 'bundle mode 2 sends exactly one native POST');
+assert.equal(posts.at(-1).variationId, 3001, 'bundle mode 2 submits the selected package parent');
+assert.equal(posts.at(-1).quantity, 3);
+assert.equal(posts.at(-1).basketItemOrderParams[0].propertyId, 51);
+assert.equal(posts.at(-1).basketItemOrderParams[0].value, 'Paketmodus zwei');
+assert.equal(posts.at(-1).totalOrderParamsMarkup, 25);
+assert.equal(posts.at(-1).template, 'Ceres::Basket.Basket');
+assert.ok(!posts.slice(beforeModeTwoPost).some(post => [93001, 93002].includes(post.variationId)));
+assert.equal(store.state.basket.items[0].variationId, 3001);
+assert.equal(store.state.basket.items[0].quantity, 3);
+assertPageUnchanged('bundle setting 2 parent purchase');
+packageModeTwo.destroy();
+modeTwoContents.$destroy();
+modeTwoBundle.$destroy();
+pdpCommerce.destroy();
+assert.equal(otherPurchase._isDestroyed, true);
+assert.equal(packageModeTwoPurchase._isDestroyed, true);
+assert.equal(pdpHost.children.length, 0);
+assertPageUnchanged('controller destruction');
+
+// A known component-only backend setting, unknown setting, or an explicitly
+// selected bundle component must not produce a misleading parent purchase UI.
+const rejectedHost = new Element('rejected-package-host');
+const rejectedStatuses = [];
+const rejectedController = createCommerceController(rejectedHost, {
+  onStatus: (message, salable) => rejectedStatuses.push({ message, salable }), onProduct() {},
+});
+const beforeRejectedPosts = posts.length;
+const beforeRejectedPurchases = purchaseInstances.length;
+for (const [bundleSetting, variationId, label] of [
+  [0, 3001, 'component-only server configuration'],
+  [undefined, 3001, 'unknown bundle configuration'],
+  [1, 3002, 'selected package component'],
+]) {
+  context.App.bundleSetting = bundleSetting;
+  rejectedController.select({ itemId: 300, variationId });
+  await waitForSelection();
+  assert.equal(rejectedHost.children[1].hidden, true, label + ': native purchase is hidden');
+  assert.equal(rejectedStatuses.at(-1).salable, false, label + ': no salable purchase status');
+  assert.equal(purchaseInstances.length, beforeRejectedPurchases, label + ': no purchase VM is created');
+  assert.equal(posts.length, beforeRejectedPosts, label + ': no cart POST is sent');
+  assertPageUnchanged(label);
+}
+context.App.bundleSetting = 1;
+rejectedController.destroy();
+
+// Unsupported native module metadata must expose a fallback, never a purchase
+// that silently mutates the page's product. Only QA metadata is temporarily absent.
+const itemModule = store._modules.root._children.items;
+const rawChildren = itemModule._children;
+itemModule._children = {};
+const unavailableHost = new Element('unavailable-pdp-host');
+const unavailableStatuses = [];
+const unavailablePurchaseCount = purchaseInstances.length;
+const unavailableCommerce = createCommerceController(unavailableHost, {
+  onStatus: (message, salable) => unavailableStatuses.push({ message, salable }),
+  onProduct() {},
+});
+try {
+  unavailableCommerce.select({ itemId: 100, variationId: 1002 });
+  await waitForSelection();
+  assert.equal(unavailableHost.children[1].hidden, true);
+  assert.equal(unavailableStatuses.at(-1).salable, false);
+  assert.match(unavailableStatuses.at(-1).message, /Artikelseite.*nicht verfügbar/);
+  assert.equal(purchaseInstances.length, unavailablePurchaseCount);
+  assert.equal(unavailableHost.children[0].children[2].href, 'http://localhost/qa-markise_100_1002');
+  assert.equal(unavailableHost.children[0].children[2].hidden, false);
+  assertPageUnchanged('missing native metadata fallback');
+} finally {
+  unavailableCommerce.destroy();
+  itemModule._children = rawChildren;
+}
+unsubscribeActions();
+unsubscribeMutations();
+originalProperties.destroy();
+originalPrice.$destroy();
+originalPage.$destroy();
 console.log(JSON.stringify({
-  status: 'passed', vue: Vue.version, nativeStore: true, nativeTemplates: true,
-  checks: ['exact selected variant', 'item-price render', 'required properties block POST', 'native surcharge', 'quantity input updates store', 'native basket POST', 'basket event/minicart', 'server failure clears loading', 'same-item variant switch reactivity', 'actual commerce controller mounts native VNodes', 'commerce GET headers/template', 'latest selection wins', 'context-change reload only when necessary', 'mismatched response hidden', 'controller destroys native VM'],
-  limitation: 'Vue server-mode component/VNode test; DOM/layout and browser events are not evaluated.',
+  status: 'passed', vue: Vue.version, nativeStore: true, nativeTemplates: true, pdpIsolatedStore: true,
+  parentPurchaseBundleSettings: [1, 2],
+  checks: ['exact selected variant', 'item-price render', 'required properties block POST', 'native surcharge', 'quantity input updates store', 'native basket POST', 'basket event/minicart', 'server failure clears loading', 'same-item variant switch reactivity', 'actual commerce controller mounts native VNodes', 'commerce GET headers/template', 'latest selection wins', 'context-change reload only when necessary', 'mismatched response hidden', 'controller destroys native VM', 'PDP exact selection uses private Vuex modules', 'native PDP property input and price reactivity', 'native PDP quantity and required validation', 'global basket action and minicart from private context', 'PDP failure clears loading', 'alternate model exact native basket payload', 'package sends one parent POST, never component-only POSTs', 'component-only and unknown bundle settings fail closed', 'selected bundle component fails closed', 'original PDP item/quantity/properties/main item preserved', 'no global variation event or URL change', 'late old-selection callbacks isolated', 'missing native module metadata fails closed'],
+  limitation: 'Vue server-mode component/VNode test; DOM/layout and browser events are not evaluated. IO responses are local fixtures; real backend package splitting is not simulated.',
 }, null, 2));

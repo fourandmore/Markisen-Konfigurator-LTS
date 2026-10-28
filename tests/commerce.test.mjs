@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { extractVariation, hasUsablePrice, installNativeVariation } from '../build-src/commerce.ts';
+import { bundlePurchaseIssue, createIsolatedPurchaseStore, extractVariation, hasUsablePrice, installNativeVariation } from '../build-src/commerce.ts';
 
 const expected = { itemId: 7654, variationId: 13556 };
 function record(overrides = {}) {
@@ -99,6 +99,27 @@ test('rejects malformed or negative backend prices instead of coercing them into
   assert.equal(hasUsablePrice(noCurrency), false);
 });
 
+test('permits a package only when the native IO bundle setting retains the parent article', () => {
+  for (const bundleSetting of [1, 2, '1', '2']) {
+    assert.equal(bundlePurchaseIssue(record().data, { bundleSetting }), null);
+  }
+  for (const bundleSetting of [0, '0']) {
+    assert.equal(bundlePurchaseIssue(record().data, { bundleSetting }), 'native-basket-would-split-bundle');
+  }
+  for (const bundleSetting of [undefined, null, '', ' ', false, true, 3, '1.0', {}, []]) {
+    assert.equal(bundlePurchaseIssue(record().data, { bundleSetting }), 'unverified-native-bundle-setting');
+  }
+});
+
+test('never treats a component or its inheritance parent as the purchasable package', () => {
+  const component = record({ variation: { id: expected.variationId, bundleType: 'bundle_item', parentVariationId: 99999 } });
+  for (const bundleSetting of [0, 1, 2, undefined]) {
+    assert.equal(bundlePurchaseIssue(component.data, { bundleSetting }), 'catalog-points-to-bundle-component');
+  }
+  assert.equal(component.data.variation.id, expected.variationId);
+  assert.equal(bundlePurchaseIssue(record({ variation: { id: expected.variationId, bundleType: null } }).data, {}), null);
+});
+
 test('registers a fresh native article once, then selects it without replacing global main-item or set state', async () => {
   const selected = record();
   const calls = [];
@@ -138,4 +159,133 @@ test('updates an existing article module without re-registering it or invoking U
     [`${expected.itemId}/setVariationMarkInvalidProps`, false],
   ]);
   assert.equal(store.state.items.mainItemId, 44);
+});
+
+// A deliberately small Vuex harness checks the adapter boundary. The separate
+// qa/native-vm.mjs suite runs the real compiled Ceres/Vuex/native cart code.
+function isolatedRuntime() {
+  const calls = [];
+  class Store {
+    constructor(config) {
+      this.config = config;
+      this.state = config.state;
+      this.state.items = config.modules.items.state;
+      for (const [key, module] of Object.entries(config.modules.items.modules)) {
+        this.state.items[key] = module.state;
+        module.state.variationSelect = module.modules.variationSelect.state;
+      }
+    }
+    commit(type, value) {
+      const own = this.config.mutations[type];
+      if (own) return own(this.state, value);
+      return this.config.modules.items.mutations[type](this.state.items, value);
+    }
+    dispatch(type, value) { return this.config.actions[type]({}, value); }
+  }
+  const noGlobalAction = () => assert.fail('An original global/URL-changing action was copied');
+  const functions = names => Object.fromEntries(names.map(name => [name, () => undefined]));
+  const base = {
+    state: () => ({ mainItemId: null, isItemSet: false, itemSetId: 0, setComponentIds: [] }),
+    mutations: { setMainItemId(state, id) { state.mainItemId = id; }, setIsAddToBasketLoading() {} },
+    getters: functions(['currentItemVariation', 'itemSetTotalPrice', 'itemSetAllVariationSelected']),
+    actions: { registerItem: noGlobalAction, initVariation: noGlobalAction, initSetComponents: noGlobalAction },
+  };
+  const item = {
+    namespaced: true,
+    state: () => ({ variation: {}, variationCache: {}, variationOrderQuantity: 1 }),
+    mutations: functions(['setVariation', 'setVariationOrderQuantity', 'setVariationOrderProperty', 'setVariationPropertySurcharges', 'setVariationMarkInvalidProps']),
+    getters: functions(['currentItemVariation', 'variationTotalPrice', 'variationBasePrice', 'variationGraduatedPrice', 'variationGroupedProperties', 'variationMissingProperties']),
+    actions: { loadVariation: noGlobalAction },
+  };
+  const select = {
+    namespaced: true, state: () => ({ isVariationSelected: true, attributes: [], variations: [] }),
+    mutations: { setIsVariationSelected() {} }, getters: {}, actions: { fetchVariations: noGlobalAction },
+  };
+  const root = Object.create(Store.prototype);
+  root.state = {
+    items: { mainItemId: 7654, isItemSet: true, itemSetId: 7654, setComponentIds: [999],
+      7654: { variation: { documents: [record()] }, variationOrderQuantity: 4, variationSelect: { isVariationSelected: false } } },
+    basket: { items: [], showNetPrices: false, isBasketLoading: false },
+  };
+  root._modules = { root: { _children: { items: { _rawModule: base, _children: {
+    7654: { _rawModule: item, _children: { variationSelect: { _rawModule: select } } },
+  } } } } };
+  root._actions = { addBasketItem: [{}], loadComponent: [{}] };
+  root._mutations = { setIsBasketLoading: [{}] };
+  root.dispatch = (type, payload) => { calls.push([type, payload]); return Promise.resolve({ native: true }); };
+  root.commit = (type, payload) => {
+    calls.push([type, payload]);
+    assert.equal(type, 'setIsBasketLoading');
+    root.state.basket.isBasketLoading = payload;
+  };
+  return { root, Vuex: { Store }, calls, base, item, select };
+}
+
+test('isolates native PDP item/quantity/property/set state, shares only the actual basket, and omits global item actions', () => {
+  const { root, Vuex, calls, base, item, select } = isolatedRuntime();
+  const before = structuredClone(root.state.items);
+  const local = createIsolatedPurchaseStore(root, Vuex, 'eam_1');
+  assert.notEqual(local, root);
+  assert.equal(local.state.basket, root.state.basket);
+  assert.notEqual(local.state.items, root.state.items);
+  assert.equal(local.state.items.mainItemId, 'eam_1');
+  assert.equal(local.state.items.isItemSet, false);
+  assert.equal(local.state.items.itemSetId, 0);
+  assert.deepEqual(local.state.items.setComponentIds, []);
+  const itemModule = local.config.modules.items.modules.eam_1;
+  assert.equal(local.config.modules.items.actions, undefined);
+  assert.equal(itemModule.actions, undefined);
+  assert.equal(itemModule.modules.variationSelect.actions, undefined);
+  assert.equal(itemModule.getters.variationTotalPrice, item.getters.variationTotalPrice);
+  assert.equal(itemModule.mutations.setVariationOrderProperty, item.mutations.setVariationOrderProperty);
+  assert.equal(itemModule.modules.variationSelect.mutations.setIsVariationSelected, select.mutations.setIsVariationSelected);
+  assert.equal(local.config.modules.items.getters.itemSetTotalPrice, base.getters.itemSetTotalPrice);
+  local.state.items.eam_1.variationOrderQuantity = 6;
+  local.state.items.eam_1.variation.documents = [record()];
+  local.state.items.eam_1.variation.documents[0].data.properties[0].property.value = 'Widget only';
+  assert.deepEqual(root.state.items, before);
+  assert.deepEqual(calls, []);
+  const other = createIsolatedPurchaseStore(root, Vuex, 'eam_2');
+  assert.equal(other.state.items.eam_2.variationOrderQuantity, 1);
+  assert.deepEqual(other.state.items.eam_2.variation, {});
+});
+
+test('forwards the complete native parent/bundle cart payload and upload-loading mutation to the original shop store', async () => {
+  const { root, Vuex, calls } = isolatedRuntime();
+  const local = createIsolatedPurchaseStore(root, Vuex, 'eam_1');
+  const parent = record();
+  assert.notEqual(parent.data.variation.id, parent.data.bundleComponents[0].data.variation.id);
+  const payload = { variationId: parent.data.variation.id, quantity: 2,
+    basketItemOrderParams: [{ propertyId: 51, value: 'Links' }], totalOrderParamsMarkup: 20 };
+  assert.deepEqual(await local.dispatch('addBasketItem', payload), { native: true });
+  assert.deepEqual(await local.dispatch('loadComponent', 'basket-preview'), { native: true });
+  local.commit('setIsBasketLoading', true);
+  assert.equal(local.state.basket.isBasketLoading, true);
+  assert.deepEqual(calls, [
+    ['addBasketItem', payload], ['loadComponent', 'basket-preview'], ['setIsBasketLoading', true],
+  ]);
+  assert.equal(calls[0][1], payload, 'The native basket object must be forwarded without reconstruction');
+  assert.equal(calls[0][1].variationId, expected.variationId);
+});
+
+test('refuses an incompatible or uninitialised PDP runtime without changing any original page state', () => {
+  const mutations = [
+    runtime => { runtime.root._modules = undefined; },
+    runtime => { runtime.root.state.items.mainItemId = null; },
+    runtime => { runtime.root._modules.root._children.items._children[7654]._rawModule.state = {}; },
+    runtime => { delete runtime.root._modules.root._children.items._children[7654]._rawModule.mutations.setVariationOrderProperty; },
+    runtime => { delete runtime.root._actions.addBasketItem; },
+    runtime => { runtime.Vuex = {}; },
+  ];
+  for (const mutate of mutations) {
+    const runtime = isolatedRuntime();
+    mutate(runtime);
+    const before = structuredClone(runtime.root.state);
+    assert.throws(() => createIsolatedPurchaseStore(runtime.root, runtime.Vuex, 'eam_1'), /Artikelseite/);
+    assert.deepEqual(runtime.root.state, before);
+    assert.deepEqual(runtime.calls, []);
+  }
+  const { root, Vuex, calls } = isolatedRuntime();
+  assert.throws(() => createIsolatedPurchaseStore(root, Vuex, String(expected.itemId)), /Artikelseite/);
+  assert.deepEqual(calls, []);
 });
