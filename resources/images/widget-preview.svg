@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 350 120" width="350" height="120" role="img" aria-label="Eclipse Markisen-Konfigurator">
+  <rect width="350" height="120" rx="14" fill="#e9f2f4"/>
+  <circle cx="306" cy="29" r="14" fill="#e3bd69"/>
+  <path d="M46 88 160 105 306 85 191 70Z" fill="#005b81" opacity=".07"/>
+  <path d="M65 30 236 30 290 71 107 71Z" fill="#ccd8c4" stroke="#005b81" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M99 30 143 71M133 30 179 71M167 30 215 71M201 30 251 71" fill="none" stroke="#f8f6e9" stroke-width="17"/>
+  <path d="M65 30 236 30" stroke="#32464e" stroke-width="8" stroke-linecap="round"/>
+  <path d="M107 71 290 71" stroke="#32464e" stroke-width="6" stroke-linecap="round"/>
+  <path d="M74 37 92 62 114 69M226 37 251 62 280 69" fill="none" stroke="#667c83" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="30" cy="27" r="11" fill="#005b81"/>
+  <path d="M26 27h8M30 23v8" stroke="#fff" stroke-width="1.5"/>
+  <circle cx="321" cy="92" r="11" fill="#fff" stroke="#005b81"/>
+  <path d="m317 91 3 3 5-5" fill="none" stroke="#005b81" stroke-width="1.5"/>
+</svg>
