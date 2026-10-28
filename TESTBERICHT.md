@@ -1,6 +1,14 @@
-# Prüfbericht – Version 1.0.0
+# Prüfbericht – Version 1.0.1
 
 Datum: 28.10.2026.
+
+## Nachprüfung für 1.0.1
+
+Der Nutzer meldete, dass Plenty bei vorhandenem **Ceres 5.0.86** die Anforderung `>=5.0.78 <6.0.0` ablehnt. Version 1.0.1 verwendet deshalb das in der [offiziellen Plugin-Definition](https://developers.plentymarkets.com/en-gb/developers/main/plugin-definition.html) ausdrücklich dokumentierte Tilde-Format: `~5.0.78` für Ceres und `~5.0.0` für IO. Auch das offizielle Ceres-5.0.86-Manifest verwendet für seine eigene IO-Abhängigkeit das Tilde-Format (`~5.0.86`).
+
+Für dieses Update wurden JSON-Gültigkeit, übereinstimmende Versionsangaben, der neu erzeugte JavaScript-Build, JavaScript-Syntax, die Änderungen gegenüber dem ursprünglichen ZIP und sämtliche Paket-Prüfsummen geprüft. Die Konfiguratorlogik, PHP-/Twig-Anbindung, Modelle und Katalogdaten sind gegenüber 1.0.0 unverändert; geändert wurden Abhängigkeiten, Versionskennzeichnungen und Dokumentation. Die nachfolgend aufgeführten Funktionsprüfungen stammen aus Version 1.0.0 und wurden für diese reine Metadatenkorrektur nicht erneut ausgeführt.
+
+**Ein erfolgreicher Plenty-Build mit Version 1.0.1 ist noch nicht bestätigt.** Der genaue interne Versionsparser wurde nicht lokal ausgeführt; die Korrektur stützt sich auf das beobachtete Fehlerbild und das offiziell dokumentierte Format.
 
 ## Zusammenfassung
 

@@ -2,7 +2,7 @@
   "name": "EclipseAwningConfigurator",
   "namespace": "EclipseAwningConfigurator",
   "type": "widget",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Eclipse Markisen-Konfigurator mit 3D-Vorschau und nativer plentyShop-LTS-Kaufanbindung für den ShopBuilder.",
   "author": "Four & More GmbH",
   "authorIcon": "icon_author_xs.png",
@@ -10,7 +10,7 @@
   "isClosedSource": false,
   "serviceProvider": "EclipseAwningConfigurator\\Providers\\AwningServiceProvider",
   "require": {
-    "Ceres": ">=5.0.78 <6.0.0",
-    "IO": ">=5.0.0 <6.0.0"
+    "Ceres": "~5.0.78",
+    "IO": "~5.0.0"
   }
 }

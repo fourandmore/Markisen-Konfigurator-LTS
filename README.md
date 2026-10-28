@@ -1,8 +1,8 @@
 # Eclipse Markisen-Konfigurator für plentyShop LTS
 
-**Version 1.0.0 · 28.10.2026 · Four & More GmbH**
+**Version 1.0.1 · 28.10.2026 · Four & More GmbH**
 
-Dieses Plugin überträgt das vorhandene Eclipse-PWA-Markisenmodul in ein eigenständiges ShopBuilder-Widget für plentyShop LTS / Ceres. Grundlage sind **Step 8 FULL** und das kumulative Update **Step 16 – Bootstrap / Technische Daten** vom 16.10.2026. Die bisherigen Modelle, Texturen und Artikelzuordnungen sind enthalten.
+Dieses Plugin überträgt das vorhandene Eclipse-PWA-Markisenmodul in ein eigenständiges ShopBuilder-Widget für plentyShop LTS. Grundlage sind **Step 8 FULL** und das kumulative Update **Step 16 – Bootstrap / Technische Daten** vom 16.10.2026. Die bisherigen Modelle, Texturen und Artikelzuordnungen sind enthalten.
 
 ## Funktionsumfang
 
@@ -20,7 +20,7 @@ Das Widget heißt im ShopBuilder **„Eclipse Markisen-Konfigurator“**. Einste
 
 ## Installation
 
-Die ausführliche Anleitung steht in **INSTALLATION_DE.md**.
+Die ausführliche Anleitung steht in **INSTALLATION_DE.md**. Version 1.0.1 korrigiert die Plugin-Abhängigkeiten für den gemeldeten Buildfehler mit Ceres 5.0.86; Hinweise zum Aktualisieren von 1.0.0 stehen ebenfalls dort.
 
 1. ZIP entpacken. Der Ordner `EclipseAwningConfigurator` ist das Plugin.
 2. Dessen **Inhalt** in die Wurzel eines Git-Repositorys übernehmen. Dort muss `plugin.json` direkt liegen. Die Modelle und Texturen vollständig mit übertragen.
@@ -33,7 +33,9 @@ Die ZIP ist die vollständige Quellcode-Übergabe. Die Installation erfolgt als 
 
 ## Versionen und Grenzen
 
-Der Code wurde gegen die offiziellen Quellen von **Ceres 5.0.86** und **IO 5.0.86** geprüft. Das Manifest lässt Ceres ab 5.0.78 und IO 5.x zu; das ist keine Bestätigung, dass jede frühere Version und jedes individuelle Theme getestet wurde. Die tatsächlichen installierten Versionen sind noch unbekannt.
+**Produktname und technischer Name:** Das Shop-Plugin heißt **plentyShop LTS**. In seiner offiziellen `plugin.json` lautet der interne Wert `name` weiterhin `Ceres`, während `marketplaceName` auf `plentyShop LTS` gesetzt ist. Für Abhängigkeiten, PHP-Klassen und Twig-Vorlagen wird deshalb weiterhin der technische Name `Ceres` verwendet. Quelle: [offizielles plentyShop-LTS-Manifest](https://github.com/plentymarkets/plugin-ceres/blob/79cb9048a767e83ce24928cd25b82d583b1e4ebd/plugin.json).
+
+Der Code wurde gegen die offiziellen Quellen von **Ceres 5.0.86** und **IO 5.0.86** geprüft. Die vom Nutzer gemeldete Ceres-Version ist ebenfalls 5.0.86; die installierte IO-Version ist noch unbekannt. Das Manifest verwendet das dokumentierte Plenty-Format `"Ceres": "~5.0.78"` (Ceres 5.0.x ab 5.0.78) und `"IO": "~5.0.0"`. Ceres 5.0.86 erfüllt die korrigierte Ceres-Anforderung. Die genaue Bedeutung der Tilde ist in der [offiziellen Plugin-Definition](https://developers.plentymarkets.com/en-gb/developers/main/plugin-definition.html) beschrieben. Die angegebenen Bereiche sind keine Bestätigung, dass jede frühere Version und jedes individuelle Theme getestet wurde.
 
 Die erste Zielumgebung ist eine Start- oder Inhaltsseite mit einem Konfigurator. Auf einer Artikeldetailseite oder bei echtem Artikel-Set-Kontext führt der Kaufbereich zur Produktseite. Dadurch wird der globale Artikel-/Setzustand des bestehenden Shops nicht überschrieben. Normale Varianten und **Artikelpakete mit `bundleType = bundle`** verwenden direkt den nativen Warenkorb. Die Paketbestandteile werden nicht zusätzlich durch dieses Plugin bestellt.
 

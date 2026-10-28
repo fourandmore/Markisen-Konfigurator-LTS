@@ -13,7 +13,7 @@ const plan = [
   ['app', 'Application', ['start', 'renderShopHtml']],
 ];
 const imports = Object.fromEntries(plan.map(([name, local]) => [name, local]));
-const out = ['/* EclipseAwningConfigurator 1.0.0 | Four & More GmbH | built from build-src */', '(function () {', '"use strict";'];
+const out = ['/* EclipseAwningConfigurator 1.0.1 | Four & More GmbH | built from build-src */', '(function () {', '"use strict";'];
 for (const [name, local, exports] of plan) {
   const source = await readFile(path.join(root, 'build-src', name + '.ts'), 'utf8');
   let code = stripTypeScriptTypes(source, { mode: 'strip' });

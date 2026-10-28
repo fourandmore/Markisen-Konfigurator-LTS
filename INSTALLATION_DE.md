@@ -2,14 +2,34 @@
 
 ## 1. Paket und Zielsystem
 
-**Plugin:** EclipseAwningConfigurator 1.0.0  
+**Plugin:** EclipseAwningConfigurator 1.0.1  
 **ShopBuilder-Name:** Eclipse Markisen-Konfigurator  
-**Ziel:** plentyShop LTS / Ceres mit IO, Startseite oder Kategorie vom Typ Inhalt  
-**Geprüfte Quellreferenz:** Ceres 5.0.86 und IO 5.0.86
+**Ziel:** plentyShop LTS mit IO, Startseite oder Kategorie vom Typ Inhalt  
+**Geprüfte Quellreferenz:** plentyShop LTS 5.0.86 und IO 5.0.86
+
+Der Produktname ist **plentyShop LTS**. Sein technischer Plugin-Name bleibt `Ceres`; dieser Schlüssel muss deshalb in `plugin.json` und in technischen Vorlagenverweisen stehen. Im Backend und bei der Installation nach **plentyShop LTS** suchen.
 
 Das Paket enthält Plugin-Definition, PHP-Registrierung, ShopBuilder-Einstellungen, Twig, fertiges JavaScript, CSS, drei 3D-Modelle und die benötigten Texturen. Ein separates PWA-Projekt, Nuxt, SDK-Zugangsdaten oder ein neues Backend sind nicht nötig.
 
 Die 299 Artikel-/Varianten-Zuordnungen stammen unverändert aus dem vorhandenen Eclipse-Modul. Sie funktionieren in einem anderen Plenty-System nur dann, wenn dort dieselben Artikel und IDs vorhanden sind. Auch im bestehenden System müssen die Varianten für den gewählten LTS-Mandanten sichtbar und bestellbar sein.
+
+### Update von Version 1.0.0
+
+Version 1.0.1 behebt die gemeldete Abhängigkeitsprüfung `required plugins version does not exist` bei vorhandenem Ceres 5.0.86. Die kombinierten Vergleiche wurden in `plugin.json` durch das dokumentierte Plenty-Tilde-Format ersetzt:
+
+```json
+"require": {
+  "Ceres": "~5.0.78",
+  "IO": "~5.0.0"
+}
+```
+
+1. Das neue ZIP entpacken und den Inhalt von `EclipseAwningConfigurator` in das vorhandene Plugin-Repository übernehmen. `plugin.json` bleibt direkt in dessen Wurzel.
+2. Die Änderungen committen und in den in Plenty verwendeten Branch pushen.
+3. In Plenty das bestehende Git-Plugin auf den neuen Stand aktualisieren. Prüfen, dass beim Plugin die Version **1.0.1** angezeigt wird.
+4. Das Test-Plugin-Set erneut bereitstellen.
+
+Wird weiterhin die alte Anforderung `>=5.0.78 <6.0.0` angezeigt, verwendet Plenty noch den alten Manifeststand. Dann den eingestellten Git-Branch und die Übernahme des neuen Commits prüfen. Ceres kann auf **5.0.86** bleiben. Ein erfolgreicher Build im Zielsystem muss nach dem Update noch bestätigt werden.
 
 ## 2. Git-Repository vorbereiten
 
@@ -33,7 +53,7 @@ Das gebaute JavaScript ist bereits enthalten. Vor dem Hochladen ist kein `npm in
 6. Über **Plugin hinzufügen** das Plugin **EclipseAwningConfigurator** installieren.
 7. Plugin aktivieren und das Plugin-Set bereitstellen.
 
-`Ceres` und `IO` müssen im gleichen Set aktiv sein. Die Plugin-Abhängigkeiten sind in `plugin.json` eingetragen. Die Einbindung orientiert sich an den Standard-LTS-Vorlagen für zusätzliche IO-Ressourcen. Falls ein individuelles Theme diese Vorlagen entfernt hat, müssen sie dort wieder berücksichtigt werden.
+**plentyShop LTS** (technischer Name `Ceres`) und **IO** müssen im gleichen Set aktiv sein. Die Plugin-Abhängigkeiten sind in `plugin.json` eingetragen. Die Einbindung orientiert sich an den Standard-LTS-Vorlagen für zusätzliche IO-Ressourcen. Falls ein individuelles Theme diese Vorlagen entfernt hat, müssen sie dort wieder berücksichtigt werden.
 
 ## 4. Widget auf einer Inhaltsseite verwenden
 
@@ -76,6 +96,7 @@ Die Zuordnung eines Plugin-Sets zum Live-Mandanten erfolgt erst nach dieser Prü
 
 | Anzeige / Verhalten | Nächster Prüfschritt |
 | --- | --- |
+| `required plugins version does not exist` mit alter Anforderung `>=5.0.78 <6.0.0` | Auf Version 1.0.1 aktualisieren; in `plugin.json` muss `"Ceres": "~5.0.78"` stehen. Git-Branch und aktualisierten Commit in Plenty prüfen |
 | Widget erscheint nicht | Git-Branch, `plugin.json` in der Repository-Wurzel, aktives Plugin und erfolgreich bereitgestelltes Plugin-Set prüfen; ShopBuilder mit diesem Set neu öffnen |
 | „Konfigurator wird geladen …“ bleibt stehen | Im Browser prüfen, ob `/js/awning-configurator.js` und die CSS-Datei erreichbar sind; individuelles Theme muss die zusätzlichen IO-Ressourcen ausgeben |
 | 3D-Modell lädt nicht | `.glb`-Dateien im Repository und Plugin-Assets prüfen; echte Binärdateien statt Git-LFS-Zeiger; Browser-Konsole auf CORS-/HTTP-Fehler prüfen |

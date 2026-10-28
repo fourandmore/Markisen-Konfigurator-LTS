@@ -1,4 +1,4 @@
-/* EclipseAwningConfigurator 1.0.0 | Four & More GmbH | built from build-src */
+/* EclipseAwningConfigurator 1.0.1 | Four & More GmbH | built from build-src */
 (function () {
 "use strict";
 const Catalog = (() => {
@@ -2073,7 +2073,7 @@ function start() {
       }
     });
   }
-  win.EclipseAwningConfigurator = { version: '1.0.0', started: true, mountAll };
+  win.EclipseAwningConfigurator = { version: '1.0.1', started: true, mountAll };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mountAll, { once: true });
   else mountAll();
   const observer = new MutationObserver((records) => {
